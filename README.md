@@ -15,7 +15,7 @@ I've been looking at the [truqu/elm-oauth2](https://package.elm-lang.org/package
     ?client_id=0oahdv4gzpBZwPM6S0h7 (1)
     &redirect_uri=https%3A%2F%2Flocal.byappt (2)
     &response_type=id_token (3)
-    &scope=openid (4)
+    &scope=openid profile(4)
     &state=state-296bc9a0-a2a2-4a57-be1a-d0e2fd9bb601 (5)
     &nonce=foo (6)
   ```
@@ -32,3 +32,30 @@ I've been looking at the [truqu/elm-oauth2](https://package.elm-lang.org/package
   1. Redirect the browser to the providers /authorize endpoint with a properly formed query-string.
   2. Generate random strings for the nonce and state parameters and store them between redirect. Use ports and localstorage for this.
   3. Parse the url for an id_token and validate nonce and state. [see specs](https://openid.net/specs/openid-connect-core-1_0.html#ImplicitIDTValidation)
+
+The response to the request above looks like this:
+```
+https://local.byappt/#id_token=ey..&state=someState
+
+Contents of the id_token:
+{
+  "sub": "a string",
+  "ver": "an int",
+  "iss": "Url",
+  "aud": "My application Id",
+  "iat": "unix-timestamp",
+  "exp": "unix-timestamp",
+  "jti": "a string",
+  "amr": [
+    "pwd"
+  ],
+  "idp": "a string",
+  "nonce": "someNonce",
+  "preferred_username": "a string",
+  "given_name": "a string",
+  "family_name": "a string",
+  "zoneinfo": "a string",
+  "updated_at": unix-timestamp,
+  "auth_time": unix-timestamp
+}
+```
