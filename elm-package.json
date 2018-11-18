@@ -4,7 +4,8 @@
     "repository": "https://github.com/user/project.git",
     "license": "BSD-3-Clause",
     "source-directories": [
-        "src"
+        "src",
+        "tests"
     ],
     "exposed-modules": [],
     "dependencies": {
