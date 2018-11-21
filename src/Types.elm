@@ -18,15 +18,3 @@ type alias SignOut =
 
 type alias Error =
     String
-
-type alias SigninFragment =
-    ( String, String )
-
-type alias Jwt =
-    { header : String
-    , payload : String
-    , signature : String
-    }
-
-type alias Payload =
-    { userName : String, nonce : String }

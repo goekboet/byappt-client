@@ -1,9 +1,8 @@
 module SignIn exposing
-    ( toAuthUrl
-    , parseSignInStatus
+    ( assertNonce
+    , getToken
     , parseFragment
-    , readUserName
-    , jwtFromToken
+    , toAuthUrl
     , toSignOutUrl
     )
 
@@ -17,15 +16,21 @@ toAuthUrl : Url -> AuthRequest -> Url
 toAuthUrl endpoint request =
     { endpoint | query = Just <| toAuthQueryString request }
 
+
 toSignOutUrl : Url -> SignOut -> Url
-toSignOutUrl endpoint req = 
+toSignOutUrl endpoint req =
     { endpoint | query = Just <| toSignoutQueryString req }
 
-kvp : String -> String -> String 
-kvp k v = String.concat [ k, "=", v ]
+
+kvp : String -> String -> String
+kvp k v =
+    String.concat [ k, "=", v ]
+
 
 queryString : List String -> String
-queryString = String.concat << List.intersperse "&"
+queryString =
+    String.concat << List.intersperse "&"
+
 
 toAuthQueryString : AuthRequest -> String
 toAuthQueryString r =
@@ -43,26 +48,15 @@ toAuthQueryString r =
         ]
 
 
-
 toSignoutQueryString : SignOut -> String
 toSignoutQueryString s =
     queryString
         [ kvp "id_token_hint" s.token
-        , kvp "post_logout_redirect_uri" <| Url.toString s.redirect ]
+        , kvp "post_logout_redirect_uri" <| Url.toString s.redirect
+        ]
 
-parseSignInStatus : String -> String -> String -> Maybe (Result Error String)
-parseSignInStatus location state nonce =
-    case fromString location of
-        Just url -> Maybe.map (signInUser state nonce) url.fragment
-        _ -> Just (Err "Bad location")
-        
-signInUser : String -> String -> String -> Result Error String
-signInUser state nonce f =
-    parseFragment f
-        |> Result.andThen (getJwt state)
-        |> Result.andThen verifySignature
-        |> Result.andThen readPayload
-        |> Result.andThen (validateNonce nonce)
+type alias SigninFragment =
+    ( String, String )
 
 parseFragment : String -> Result Error SigninFragment
 parseFragment f =
@@ -80,57 +74,41 @@ parseFragment f =
         _ ->
             Err "Bad fragment format"
 
-getJwt : String -> SigninFragment -> Result Error Jwt
-getJwt ourState ( token, theirState ) =
-    if ourState == theirState then
-        jwtFromToken token
+getToken : String -> SigninFragment -> Result Error String
+getToken state ( token, s ) =
+    if s == state then
+        Ok token
 
     else
-        Err "Mismatching State"
+        Err "Mismatching state"
 
-jwtFromToken : String -> Result Error Jwt
-jwtFromToken token =
+
+assertNonce : String -> String -> Result Error String
+assertNonce token nonce =
     case String.split "." token of
         [ h, p, s ] ->
-            Result.map3 Jwt (decode h) (decode p) (Ok s)
+            decode p
+                |> Result.andThen readNonce
+                |> Result.andThen (validateNonce nonce)
+                |> Result.map (always token)
 
         _ ->
             Err "malformed jwt-token"
 
-verifySignature : Jwt -> Result Error String
-verifySignature jwt =
-    Ok jwt.payload
 
-readPayload : String -> Result Error Payload
-readPayload =
+readNonce : String -> Result Error String
+readNonce =
     let
         nonce =
             field "nonce" string
-
-        user =
-            field "preferred_username" string
-
-        withNonce =
-            Json.Decode.map2 Payload user nonce
     in
-    Result.mapError (always "Unexpected Json") << decodeString withNonce
+    Result.mapError (always "Unexpected Json") << decodeString nonce
 
-validateNonce : String -> Payload -> Result Error String
-validateNonce n p =
-    if p.nonce == n then
-        Ok p.userName
+
+validateNonce : String -> String -> Result Error ()
+validateNonce ourNonce theirNonce =
+    if ourNonce == theirNonce then
+        Ok ()
 
     else
         Err "Bad nonce."
-
-
-readUserName : String -> String -> Result String String
-readUserName ourNonce p =
-    Result.andThen (validateNonce ourNonce) <|
-        readPayload p
-
-
-
-
-
-

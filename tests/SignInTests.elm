@@ -1,7 +1,6 @@
 module SignInTests exposing (..)
 
 import Expect exposing (Expectation)
-import Fuzz exposing (Fuzzer, int, list, string)
 import Test exposing (..)
 import Url exposing (Url, Protocol(..))
 import Types exposing (..)
@@ -87,17 +86,10 @@ isOk r = case r of
 falsePositive : String -> (String, Bool)     
 falsePositive arg = (arg, isOk <| SignIn.parseFragment arg)
 
-expectedJwt : Jwt
-expectedJwt = 
-    { header = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
-    , payload = "{\"sub\":\"1234567890\",\"name\":\"John Doe\",\"iat\":1516239022}"
-    , signature = "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-    }
-
 someUsername = "someUsername"
-someNonce = "SomeNonce"
+someNonce = "someNonce"
 someOtherNonce = "someOtherNonce"
-wellformedPayload = "{\"preferred_username\":\"someUsername\",\"nonce\":\"SomeNonce\"}"
+tokenWithNonce = "eyJraWQiOiJrZXBaZko4SFRoaFZ3MjREbWE2dG5uVmdHdlduWldnSXAxM1ZJZWlYelF3IiwiYWxnIjoiUlMyNTYifQ.eyJzdWIiOiIwMHVoZWt5cjg0MmlKZ3RZdzBoNyIsInZlciI6MSwiaXNzIjoiaHR0cHM6Ly9kZXYtOTg3ODA0Lm9rdGFwcmV2aWV3LmNvbS9vYXV0aDIvZGVmYXVsdCIsImF1ZCI6IjBvYWhkdjRnenBCWndQTTZTMGg3IiwiaWF0IjoxNTQyOTE0MDk3LCJleHAiOjE1NDI5MTc2OTcsImp0aSI6IklELkpkZjhONkYzMEtBYWlUVzJFclMwbUpfRWxBQ0hVdmJBSndmUFFxbUtJc3ciLCJhbXIiOlsicHdkIl0sImlkcCI6IjAwb2hla3BtemNTbHNGOVFEMGg3Iiwibm9uY2UiOiJzb21lTm9uY2UiLCJhdXRoX3RpbWUiOjE1NDI5MTM3Njd9.LfDZLZRXB4H4XwBZI0JS3Vv5bEffHP1alOInVSkgiGTH51o22qfCbdzuCavOEF5eANPMhTsJTV7Q9GSQ3h1gQDiuAdLqrevGSQV_8PrdJ1zDATP2Qno03WB5aSutKz9FObDc_H-CU1lzlvTP5Hcu5xjR6irR0J1zwKYE2DuBcO-8KjBXuZz3ebNzgNbFhTAsRqtWGAQOzxxEsLMPjoUMOykrz0cCuq5dVOzEuF50lmdmw3kesv9aIdu7xT3Sbx6CjMLN1NbyzTZsfZFvB1XJ7NqXEibybvJ6y6emJZyc61Gafu3acmlb4KVtlq-hyWXgJw441lvkq8f5luIicPO9Rg"
 
 suite : Test
 suite =
@@ -112,10 +104,8 @@ suite =
             <| \_ -> Expect.equal [] <| List.filter Tuple.second <| List.map falsePositive malFormed
         , test "Parses errormessage in signinFragment"
             <| \_ -> Expect.equal (Err someErrorMessage) <| SignIn.parseFragment errorFragment
-        , test "Decodes well-formed Jwt-token"
-            <| \_ -> Expect.equal (Ok expectedJwt) (SignIn.jwtFromToken wellFormedToken)
-        , test "Validates nonce and extracts username from payload"
-            <| \_ -> Expect.equal (Ok someUsername) (SignIn.readUserName someNonce wellformedPayload)
+        , test "Validates nonce."
+            <| \_ -> Expect.equal (Ok tokenWithNonce) (SignIn.assertNonce tokenWithNonce someNonce )
         , test "Errors on nonce mismatch"
-            <| \_ -> Expect.equal False (isOk <| SignIn.readUserName someOtherNonce wellformedPayload)
+            <| \_ -> Expect.equal False (isOk <| SignIn.assertNonce tokenWithNonce someOtherNonce)
         ]

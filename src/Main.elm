@@ -1,12 +1,26 @@
-module Main exposing (..)
+port module Main exposing (Flags, Handles, Model, Msg(..), auth, checkCallback, fromJson, init, loginComponent, main, myEndpoint, oktaEndpoint, rememberSession, sessionHandles, subscriptions, update, view)
 
 import Browser exposing (Document, document)
 import Browser.Navigation exposing (load)
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
-import Url exposing (Protocol(..), Url)
-import SignIn exposing (toAuthUrl, parseSignInStatus)
+import Json.Decode exposing (Value, decodeValue, field, string)
+import SignIn exposing (getToken, parseFragment, toAuthUrl, toSignOutUrl, assertNonce )
 import Types exposing (..)
+import Url exposing (Protocol(..), Url)
+
+
+port rememberSession : () -> Cmd msg
+
+
+port sessionHandles : (Value -> msg) -> Sub msg
+
+
+port gotToken : String -> Cmd msg
+
+
+port forgetToken : () -> Cmd msg
+
 
 main =
     document
@@ -17,34 +31,82 @@ main =
         }
 
 
-type alias SignedInStatus =
-    Maybe (Result String String)
-
 type alias Model =
-    { status : SignedInStatus
+    { token : Maybe String
+    , errors : List String
     }
 
-type Msg
-    = NoOp
-    | SignIn
 
-someState : String
-someState = "SomeState"
+type alias Handles =
+    { state : String
+    , nonce : String
+    }
 
-someNonce : String
-someNonce = "SomeNonce"
 
-init : String -> ( Model, Cmd Msg )
-init l =
+fromJson : Value -> Result Error Handles
+fromJson =
     let
-        s = parseSignInStatus l someState someNonce
-    in 
-        ( { status = s }, Cmd.none )
+        decode =
+            Json.Decode.map2 Handles (field "state" string) (field "state" string)
+    in
+    Result.mapError (always "Bad json sessionHandles") << decodeValue decode
+
+
+type alias Flags =
+    { location : String
+    , state : Maybe String
+    , nonce : Maybe String
+    , token : Maybe String
+    }
+
+checkCallback : String -> String -> String -> Result Error String
+checkCallback fragment state nonce =
+        parseFragment fragment
+            |> Result.andThen (getToken state)
+            |> Result.andThen (assertNonce nonce)
+        
+init : Flags -> ( Model, Cmd Msg )
+init flags =
+    let
+        fragment =
+            Maybe.andThen .fragment (Url.fromString flags.location)
+
+        tkn =
+            Maybe.map3 checkCallback fragment flags.state flags.nonce
+    in
+    case tkn of
+        Just res ->
+            case res of
+                Ok t ->
+                    ( { token = Just t, errors = [] }, gotToken t )
+
+                Err m ->
+                    ( { token = Nothing, errors = [ m ] }, Cmd.none )
+
+        Nothing ->
+            ( { token = flags.token, errors = [] }, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
-    Sub.none
+    sessionHandles SignIn
+
+
+type Msg
+    = NoOp
+    | RememberSession
+    | SignIn Value
+    | SignedIn String
+    | SignOut String
+
+signOut : String -> String
+signOut t =
+    let
+        req = { redirect = myEndpoint
+              , token = t 
+              }
+    in
+        Url.toString <| toSignOutUrl signOutUrl req
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -52,40 +114,64 @@ update msg model =
         NoOp ->
             ( model, Cmd.none )
 
-        SignIn ->
-            let
-                request =
-                    { clientId = "0oahdv4gzpBZwPM6S0h7"
-                    , redirectUri = myEndpoint
-                    , responseType = [ "id_token" ]
-                    , scope = [ "openid", "profile" ]
-                    , state = someState
-                    , nonce = someNonce
-                    }
-            in
-            ( model, toAuthUrl auth request |> Url.toString |> Browser.Navigation.load )
+        RememberSession ->
+            ( model, rememberSession () )
+
+        SignIn session ->
+            case fromJson session of
+                Ok handle ->
+                    let
+                        request =
+                            { clientId = "0oahdv4gzpBZwPM6S0h7"
+                            , redirectUri = myEndpoint
+                            , responseType = [ "id_token" ]
+                            , scope = [ "openid" ]
+                            , state = handle.state
+                            , nonce = handle.nonce
+                            }
+                    in
+                    ( model, toAuthUrl auth request |> Url.toString |> Browser.Navigation.load )
+
+                Err m ->
+                    ( { model | errors = m :: model.errors }, Cmd.none )
+
+        SignedIn token ->
+            ( model, gotToken token )
+
+        SignOut token ->
+            ( { model | token = Nothing }
+            , Cmd.batch
+                [ forgetToken ()
+                , signOut token |> Browser.Navigation.load
+                ]
+            )
+
 
 view : Model -> Document Msg
 view m =
     { title = "OpenId Connect with okta and elm"
-    , body = [ loginComponent m.status ] }
+    , body = [ loginComponent m.token ]
+    }
 
-loginComponent : SignedInStatus -> Html Msg
+
+loginComponent : Maybe String -> Html Msg
 loginComponent s =
-    let
-        notSignedIn = loginButton
-        signedIn user = text <| String.concat ["You are signed in as ", user ]
-        error = text "There was an error."
-    in
-        case s of
-            Nothing -> notSignedIn
-            Just (Ok username) -> signedIn username
-            Just (Err _) -> error
-    
+    case s of
+        Nothing ->
+            signInButton
 
-loginButton : Html Msg
-loginButton =
-    Html.button [ onClick SignIn ] [ Html.text "Sign in" ]
+        Just token ->
+            signOutButton token
+
+
+signInButton : Html Msg
+signInButton =
+    Html.button [ onClick <| RememberSession ] [ Html.text "Sign in" ]
+
+
+signOutButton : String -> Html Msg
+signOutButton token =
+    Html.button [ onClick <| SignOut token ] [ Html.text "Sign out" ]
 
 
 myEndpoint : Url
@@ -113,3 +199,7 @@ oktaEndpoint =
 auth : Url
 auth =
     { oktaEndpoint | path = "/oauth2/default/v1/authorize" }
+
+signOutUrl : Url
+signOutUrl =
+    { oktaEndpoint | path = "/oauth2/default/v1/logout" }
