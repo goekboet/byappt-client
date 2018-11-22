@@ -1,11 +1,11 @@
-port module Main exposing (Flags, Handles, Model, Msg(..), auth, checkCallback, fromJson, init, loginComponent, main, myEndpoint, oktaEndpoint, rememberSession, sessionHandles, subscriptions, update, view)
+port module Main exposing (rememberSession, sessionHandles, gotToken, tokenVerified, forgetToken)
 
 import Browser exposing (Document, document)
 import Browser.Navigation exposing (load)
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
 import Json.Decode exposing (Value, decodeValue, field, string)
-import SignIn exposing (getToken, parseFragment, toAuthUrl, toSignOutUrl, assertNonce )
+import SignIn exposing (assertNonce, getToken, parseFragment, toAuthUrl, toSignOutUrl)
 import Types exposing (..)
 import Url exposing (Protocol(..), Url)
 
@@ -17,6 +17,9 @@ port sessionHandles : (Value -> msg) -> Sub msg
 
 
 port gotToken : String -> Cmd msg
+
+
+port tokenVerified : (Value -> msg) -> Sub msg
 
 
 port forgetToken : () -> Cmd msg
@@ -31,10 +34,14 @@ main =
         }
 
 
+type AuthNStatus
+    = NotLoggedIn
+    | LoggingIn
+    | LoggedIn String
+
+
 type alias Model =
-    { token : Maybe String
-    , errors : List String
-    }
+    { status : Result String AuthNStatus }
 
 
 type alias Handles =
@@ -47,7 +54,7 @@ fromJson : Value -> Result Error Handles
 fromJson =
     let
         decode =
-            Json.Decode.map2 Handles (field "state" string) (field "state" string)
+            Json.Decode.map2 Handles (field "state" string) (field "nonce" string)
     in
     Result.mapError (always "Bad json sessionHandles") << decodeValue decode
 
@@ -59,12 +66,14 @@ type alias Flags =
     , token : Maybe String
     }
 
+
 checkCallback : String -> String -> String -> Result Error String
 checkCallback fragment state nonce =
-        parseFragment fragment
-            |> Result.andThen (getToken state)
-            |> Result.andThen (assertNonce nonce)
-        
+    parseFragment fragment
+        |> Result.andThen (getToken state)
+        |> Result.andThen (assertNonce nonce)
+
+
 init : Flags -> ( Model, Cmd Msg )
 init flags =
     let
@@ -78,35 +87,45 @@ init flags =
         Just res ->
             case res of
                 Ok t ->
-                    ( { token = Just t, errors = [] }, gotToken t )
+                    ( { status = Ok LoggingIn }, gotToken t )
 
-                Err m ->
-                    ( { token = Nothing, errors = [ m ] }, Cmd.none )
+                Err e ->
+                    ( { status = Err e }, Cmd.none )
 
         Nothing ->
-            ( { token = flags.token, errors = [] }, Cmd.none )
+            case flags.token of
+                Just t ->
+                    ( { status = Ok (LoggedIn t) }, Cmd.none )
+
+                Nothing ->
+                    ( { status = Ok NotLoggedIn }, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
-    sessionHandles SignIn
-
+    Sub.batch
+        [ sessionHandles SignIn
+        , tokenVerified TokenVerified]
 
 type Msg
     = NoOp
     | RememberSession
     | SignIn Value
+    | TokenVerified Value
     | SignedIn String
     | SignOut String
+
 
 signOut : String -> String
 signOut t =
     let
-        req = { redirect = myEndpoint
-              , token = t 
-              }
+        req =
+            { redirect = myEndpoint
+            , token = t
+            }
     in
-        Url.toString <| toSignOutUrl signOutUrl req
+    Url.toString <| toSignOutUrl signOutUrl req
+
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -133,13 +152,21 @@ update msg model =
                     ( model, toAuthUrl auth request |> Url.toString |> Browser.Navigation.load )
 
                 Err m ->
-                    ( { model | errors = m :: model.errors }, Cmd.none )
+                    ( { status = Err m }, Cmd.none )
+
+        TokenVerified s ->
+            case decodeValue string s of
+                Ok t ->
+                    ( { status = Ok (LoggedIn t) }, Cmd.none )
+
+                _ ->
+                    ( { status = Err "Verify jwt failed" }, Cmd.none )
 
         SignedIn token ->
             ( model, gotToken token )
 
         SignOut token ->
-            ( { model | token = Nothing }
+            ( { status = Ok NotLoggedIn }
             , Cmd.batch
                 [ forgetToken ()
                 , signOut token |> Browser.Navigation.load
@@ -150,18 +177,31 @@ update msg model =
 view : Model -> Document Msg
 view m =
     { title = "OpenId Connect with okta and elm"
-    , body = [ loginComponent m.token ]
+    , body = [ loginComponent m.status ]
     }
 
 
-loginComponent : Maybe String -> Html Msg
-loginComponent s =
+loginComponent : Result String AuthNStatus -> Html Msg
+loginComponent r =
+    case r of
+        Ok status ->
+            signInStatus status
+
+        Err msg ->
+            Html.text msg
+
+
+signInStatus : AuthNStatus -> Html Msg
+signInStatus s =
     case s of
-        Nothing ->
+        NotLoggedIn ->
             signInButton
 
-        Just token ->
-            signOutButton token
+        LoggingIn ->
+            Html.text "logging in..."
+
+        LoggedIn t ->
+            signOutButton t
 
 
 signInButton : Html Msg
@@ -199,6 +239,7 @@ oktaEndpoint =
 auth : Url
 auth =
     { oktaEndpoint | path = "/oauth2/default/v1/authorize" }
+
 
 signOutUrl : Url
 signOutUrl =

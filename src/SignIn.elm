@@ -84,7 +84,7 @@ getToken state ( token, s ) =
 
 
 assertNonce : String -> String -> Result Error String
-assertNonce token nonce =
+assertNonce nonce token =
     case String.split "." token of
         [ h, p, s ] ->
             decode p
@@ -93,7 +93,7 @@ assertNonce token nonce =
                 |> Result.map (always token)
 
         _ ->
-            Err "malformed jwt-token"
+            Err (String.join " " ["malformed jwt-token:", token ])
 
 
 readNonce : String -> Result Error String

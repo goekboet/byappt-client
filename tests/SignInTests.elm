@@ -105,7 +105,7 @@ suite =
         , test "Parses errormessage in signinFragment"
             <| \_ -> Expect.equal (Err someErrorMessage) <| SignIn.parseFragment errorFragment
         , test "Validates nonce."
-            <| \_ -> Expect.equal (Ok tokenWithNonce) (SignIn.assertNonce tokenWithNonce someNonce )
+            <| \_ -> Expect.equal (Ok tokenWithNonce) (SignIn.assertNonce someNonce tokenWithNonce)
         , test "Errors on nonce mismatch"
-            <| \_ -> Expect.equal False (isOk <| SignIn.assertNonce tokenWithNonce someOtherNonce)
+            <| \_ -> Expect.equal False (isOk <| SignIn.assertNonce someOtherNonce tokenWithNonce)
         ]
