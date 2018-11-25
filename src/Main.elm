@@ -43,17 +43,11 @@ type AuthNStatus
     | Redirecting Value -- got nonce and state
     | LoggingIn String -- got token from redirect
     | LoggedIn String -- got verified token from js
-    | SigningOut String -- cleared token from js
-
-type EndpointStatus
-    = NotNeeded
-    | Establishing 
-    | Established Endpoint
+    | SigningOut -- cleared token from js
 
 type alias Model =
-    { discovery : String
+    { endpoint : Endpoint
     , status : Result String AuthNStatus 
-    , endpoint : Result String EndpointStatus
     }
 
 
@@ -74,7 +68,7 @@ fromJson =
 
 type alias Flags =
     { location : String
-    , discovery : String
+    , oidcEndpoint : Endpoint
     , state : Maybe String
     , nonce : Maybe String
     , token : Maybe String
@@ -86,13 +80,6 @@ checkCallback fragment state nonce =
     parseFragment fragment
         |> Result.andThen (getToken state)
         |> Result.andThen (assertNonce nonce)
-
-getEndpoint : String -> Cmd Msg
-getEndpoint u =
-    get
-        { url = u
-        , expect = expectJson GotEndpoint Discovery.fromJson}
-        
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
@@ -109,17 +96,15 @@ init flags =
                 Ok t ->
                     ( 
                         { status = Ok (LoggingIn t)
-                        , endpoint = Ok Establishing 
-                        , discovery = flags.discovery 
+                        , endpoint = flags.oidcEndpoint 
                         }
-                        , getEndpoint flags.discovery  
+                        , gotToken t  
                     )
 
                 Err e ->
                     ( 
                         { status = Err e
-                        , endpoint = Ok NotNeeded
-                        , discovery = flags.discovery 
+                        , endpoint = flags.oidcEndpoint
                         }
                         , Cmd.none 
                     )
@@ -127,10 +112,10 @@ init flags =
         Nothing ->
             case flags.token of
                 Just t ->
-                    ( { status = Ok (LoggedIn t), endpoint = Ok NotNeeded, discovery = flags.discovery }, Cmd.none )
+                    ( { status = Ok (LoggedIn t), endpoint = flags.oidcEndpoint }, Cmd.none )
 
                 Nothing ->
-                    ( { status = Ok NotLoggedIn, endpoint = Ok NotNeeded, discovery = flags.discovery }, Cmd.none )
+                    ( { status = Ok NotLoggedIn, endpoint = flags.oidcEndpoint }, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
@@ -138,61 +123,47 @@ subscriptions _ =
     Sub.batch
         [ sessionHandles GotSession
         , tokenVerified TokenVerified
-        , forgotToken SignOut]
+        , forgotToken SignedOut]
 
 type Msg
     = NoOp
     | RememberSession
     | GotSession Value
-    | GotEndpoint (Result Http.Error Endpoint)
     | TokenVerified Value
     | SignedIn String
-    | SignOut String
+    | SignOut
+    | SignedOut String
 
 
-signOut : String -> String
-signOut t =
+redirectToSignoutEndpoint : Endpoint -> String -> Result Error (Cmd msg)
+redirectToSignoutEndpoint e t =
     let
         req =
             { redirect = myEndpoint
             , token = t
             }
     in
-    Url.toString <| toSignOutUrl signOutUrl req
-
-useEndpoint : Endpoint -> AuthNStatus -> Cmd Msg
-useEndpoint e s =
-    case s of   
-        LoggingIn tkn -> gotToken tkn
-        SigningOut _ -> forgetToken ()
-        Redirecting h -> fromJson h
-            |> Result.andThen (toAuthEndpoint e)
+        Result.fromMaybe "Bad signout endpoint" (Url.fromString e.endSession)
+            |> Result.map (\x -> toSignOutUrl x req)
+            |> Result.map Url.toString
             |> Result.map load
-            |> Result.withDefault Cmd.none
-            
-        _ -> Cmd.none
 
-toAuthEndpoint : Endpoint -> Handles -> Result String String
-toAuthEndpoint endpoint handle  =
+redirectToAuthEndpoint : Endpoint -> Handles -> Result Error (Cmd msg)
+redirectToAuthEndpoint e s =
     let
         request =
             { clientId = "0oahdv4gzpBZwPM6S0h7"
             , redirectUri = myEndpoint
             , responseType = [ "id_token" ]
             , scope = [ "openid" ]
-            , state = handle.state
-            , nonce = handle.nonce
+            , state = s.state
+            , nonce = s.nonce
             }
     in
-        Result.fromMaybe "Bad auth endpoint" (Url.fromString endpoint.auth)
+        Result.fromMaybe "Bad auth endpoint" (Url.fromString e.auth)
             |> Result.map (\x -> toAuthUrl x request)
-            |> Result.map Url.toString 
-
-establishedEndpoint : EndpointStatus -> Result String Endpoint  
-establishedEndpoint s =
-    case s of
-        Established e -> Ok e
-        _ -> Err "Endpoint not established"
+            |> Result.map Url.toString
+            |> Result.map load
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -205,42 +176,38 @@ update msg model =
             ( model , rememberSession () )
 
         GotSession s ->
-            ( { model | status = Ok (Redirecting s) }, getEndpoint model.discovery )
-
-        GotEndpoint r -> 
-            case r of
-                Ok e -> 
-                    (
-                        { model
-                        | endpoint = Ok (Established e)
-                        }, Result.withDefault Cmd.none
-                            <| Result.map (useEndpoint e) model.status)
-                Err _ -> 
-                    (
-                        { model 
-                        | status = Err "No endpoint discovered"
-                        , endpoint = Err "No endpoint discovered"
-                        }
-                        , Cmd.none
-                    )
+            ( 
+                { model 
+                | status = Ok (Redirecting s) 
+                }
+                , 
+                fromJson s
+                    |> Result.andThen (redirectToAuthEndpoint model.endpoint)
+                    |> Result.withDefault Cmd.none 
+            )
 
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
-                    ( { model | status = Ok (LoggedIn t), endpoint = Ok NotNeeded }, Cmd.none )
+                    ( { model | status = Ok (LoggedIn t) }, Cmd.none )
 
                 _ ->
-                    ( { model | status = Err "Verify jwt failed", endpoint = Ok NotNeeded }, Cmd.none )
+                    ( { model | status = Err "Verify jwt failed" }, Cmd.none )
 
         SignedIn token ->
             ( model, gotToken token )
 
-        SignOut token ->
-            ( { model | status = Ok (SigningOut token), endpoint = Ok Establishing }
-            , Cmd.batch
-                [ forgetToken ()
-                , signOut token |> Browser.Navigation.load
-                ]
+        SignOut ->
+            ( { model 
+              | status = Ok SigningOut
+              }
+            , forgetToken ()
+            )
+        
+        SignedOut t ->
+            ( model
+            , redirectToSignoutEndpoint model.endpoint t
+                |> Result.withDefault Cmd.none
             )
 
 
@@ -273,7 +240,7 @@ signInStatus s =
         LoggedIn t ->
             signOutButton t
 
-        SigningOut _ ->
+        SigningOut ->
             Html.text "Logging out"
 
         Redirecting _ -> 
@@ -287,7 +254,7 @@ signInButton =
 
 signOutButton : String -> Html Msg
 signOutButton token =
-    Html.button [ onClick <| SignOut token ] [ Html.text "Sign out" ]
+    Html.button [ onClick SignOut ] [ Html.text "Sign out" ]
 
 
 myEndpoint : Url

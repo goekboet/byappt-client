@@ -1,0 +1,84 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Elm • OpenIdConnect</title>
+  <script type="text/javascript" src="elm.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsrsasign/8.0.12/jsrsasign-all-min.js"></script>
+</head>
+
+<body>
+</body>
+
+<script type="text/javascript">
+// https://stackoverflow.com/a/27747377/5933956
+// dec2hex :: Integer -> String
+function dec2hex (dec) {
+  return ('0' + dec.toString(16)).substr(-2)
+}
+
+// generateId :: Integer -> String
+function generateId (len) {
+  var arr = new Uint8Array((len || 40) / 2)
+  window.crypto.getRandomValues(arr)
+  return Array.from(arr, dec2hex).join('')
+}
+var loc = window.location.href;
+window.location.hash = "";
+var fs = {
+	location: loc,
+	oidcEndpoint: {
+		auth: "https://dev-987804.oktapreview.com/oauth2/default/v1/authorize",
+		keys: "https://dev-987804.oktapreview.com/oauth2/default/v1/keys",
+		endSession: "https://dev-987804.oktapreview.com/oauth2/default/v1/logout"
+	},
+	state: sessionStorage.getItem("byappt.state"),
+	nonce: sessionStorage.getItem("byappt.nonce"),
+	token: sessionStorage.getItem("byappt.token")
+};
+
+var app = Elm.Main.init({ flags: fs });
+
+app.ports.rememberSession.subscribe(function() {
+	console.log("rememberSession");
+	sessionStorage.setItem("byappt.state", generateId(20));
+	sessionStorage.setItem("byappt.nonce", generateId(10));
+	
+	var h = {
+		state : sessionStorage.getItem("byappt.state"),
+		nonce : sessionStorage.getItem("byappt.nonce")
+	};
+    
+	app.ports.sessionHandles.send(h);
+});
+
+app.ports.gotToken.subscribe(function(token) {
+	console.log("gotToken");
+	var hardcodedKey = {
+		kty : "RSA",
+        alg : "RS256",
+        kid : "kepZfJ8HThhVw24Dma6tnnVgGvWnZWgIp13VIeiXzQw",
+        use : "sig",
+        e : "AQAB",
+        n : "xydkjFHtQe9NghQ-Q8bS4Z1a26LtwpMgtEMNJ_AxkeOL1g1Gole7JmV6LkUjtUSWxxrn3YnaHUWxzrYXtS7hj5wQugePBD2EFq2Sk4jtOgDXe05o86dvGO-IKF89CVDhfjMPDofYnhIDto2FW6T9xEFLTs_ouNdlkLu0H1zFq-2sOnS_W_IBDU_wBQMfLoFaoo3bmms-YASSwEFBaCDQI8zAMhhOUqHtsZYq2Ra4DNk30_BhqFFRFGV99ANUXK1YyBQkmhD5JlgYWTV5xKiv0VyJIhuX5umgPHKB3B9W4UC3QoiXk3_ZzBqhxv_PV-TCEwyUj1sFJH2FfxOGwPkHKw"
+	};
+	
+	var key = KEYUTIL.getKey(hardcodedKey);
+	if (KJUR.jws.JWS.verifyJWT(token, key, {alg: ["RS256"]})) {
+		sessionStorage.setItem("byappt.token", token);
+	}
+	
+	app.ports.tokenVerified.send(sessionStorage.getItem("byappt.token"));
+});
+
+app.ports.forgetToken.subscribe(function() {
+	console.log("forget token");
+	var token = sessionStorage.getItem("byappt.token");
+	sessionStorage.removeItem("byappt.token");
+
+	app.ports.forgotToken.send(token);
+});
+</script>
+
+</html>
