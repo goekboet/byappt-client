@@ -18,3 +18,14 @@ type alias SignOut =
 
 type alias Error =
     String
+
+
+type alias OidcLogin =
+    { kid : String
+    , token : String
+    }
+
+type alias KeySet =
+    { kid : String
+    , jwks : String
+    }

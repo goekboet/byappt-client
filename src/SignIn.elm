@@ -83,14 +83,21 @@ getToken state ( token, s ) =
         Err "Mismatching state"
 
 
-assertNonce : String -> String -> Result Error String
+assertNonce : String -> String -> Result Error OidcLogin
 assertNonce nonce token =
     case String.split "." token of
         [ h, p, s ] ->
-            decode p
-                |> Result.andThen readNonce
-                |> Result.andThen (validateNonce nonce)
-                |> Result.map (always token)
+            let
+                checkNonce = decode p
+                    |> Result.andThen readNonce
+                    |> Result.andThen (validateNonce nonce)
+                    |> Result.map (always token)
+
+                getKeyId = decode h
+                    |> Result.andThen readKid
+            in
+                Result.map2 OidcLogin getKeyId checkNonce 
+            
 
         _ ->
             Err (String.join " " ["malformed jwt-token:", token ])
@@ -102,8 +109,14 @@ readNonce =
         nonce =
             field "nonce" string
     in
-    Result.mapError (always "Unexpected Json") << decodeString nonce
+        Result.mapError (always "Unexpected Json") << decodeString nonce
 
+readKid : String -> Result Error String
+readKid =
+    let 
+        kid = field "kid" string
+    in
+        Result.mapError (always "Unexpected json") << decodeString kid
 
 validateNonce : String -> String -> Result Error ()
 validateNonce ourNonce theirNonce =

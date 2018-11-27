@@ -7,9 +7,10 @@ import Expect exposing (..)
 
 suite : Test
 suite =
-    describe "Can use result from discoveryendpoint."
-        [test "parse endpoint from discovery-document"
-            <| \_ -> Expect.equal (Ok expectedEndpoint) (decodeString fromJson mockDiscoveryDoc) ]
+    describe "Get keys."
+        [ test "from json keydoc to value" 
+            <| \_ -> Expect.equal (Ok "val1") (Result.andThen getValue (getKey "kid1" mockKeyDoc))
+        ]        
 
 expectedEndpoint : Endpoint
 expectedEndpoint =
@@ -17,6 +18,19 @@ expectedEndpoint =
     , endSession = "https://dev-987804.oktapreview.com/oauth2/default/v1/logout"
     , keys = "https://dev-987804.oktapreview.com/oauth2/default/v1/keys"
     }
+
+rightKey = "{ \"kid\": \"kid1\", \"otherKey\": \"val1\" }"
+
+mockKeyDoc : String
+mockKeyDoc =
+    """
+    {
+        \"keys\": [
+            { \"kid\": \"kid1\", \"n\": \"val1\" },
+            { \"kid\": \"kid2\", \"n\": \"val2\" }
+        ]
+    }
+    """
 
 mockDiscoveryDoc : String
 mockDiscoveryDoc = 

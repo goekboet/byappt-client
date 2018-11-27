@@ -1,4 +1,4 @@
-port module Main exposing (rememberSession, sessionHandles, gotToken, tokenVerified, forgetToken, forgotToken)
+port module Main exposing (rememberSession, sessionHandles, verifyToken, tokenVerified, forgetToken, forgotToken)
 
 import Browser exposing (Document, document)
 import Browser.Navigation exposing (load)
@@ -6,10 +6,10 @@ import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
 import Json.Decode exposing (Value, decodeValue, field, string)
 import SignIn exposing (assertNonce, getToken, parseFragment, toAuthUrl, toSignOutUrl)
-import Discovery exposing (Endpoint)
+import Discovery exposing (Endpoint, getKey)
 import Types exposing (..)
 import Url exposing (Protocol(..), Url)
-import Http exposing (get, expectJson)
+import Http exposing (get, expectString)
 
 
 port rememberSession : () -> Cmd msg
@@ -18,8 +18,7 @@ port rememberSession : () -> Cmd msg
 port sessionHandles : (Value -> msg) -> Sub msg
 
 
-port gotToken : String -> Cmd msg
-
+port verifyToken : VerifiableToken -> Cmd msg
 
 port tokenVerified : (Value -> msg) -> Sub msg
 
@@ -75,11 +74,24 @@ type alias Flags =
     }
 
 
-checkCallback : String -> String -> String -> Result Error String
+checkCallback : String -> String -> String -> Result Error OidcLogin
 checkCallback fragment state nonce =
     parseFragment fragment
         |> Result.andThen (getToken state)
         |> Result.andThen (assertNonce nonce)
+
+makeKeyResponse : String -> Result Http.Error String -> Msg
+makeKeyResponse kid response =
+    let
+        withKid = Result.map (KeySet kid) response
+            |> Result.mapError (always "Request errored.")
+    in
+        GotKey withKid
+
+fetchKey : Endpoint -> String -> Cmd Msg
+fetchKey ept kid = 
+    get { url = ept.keys, expect = expectString (makeKeyResponse kid) }  
+
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
@@ -95,10 +107,10 @@ init flags =
             case res of
                 Ok t ->
                     ( 
-                        { status = Ok (LoggingIn t)
+                        { status = Ok (LoggingIn t.token)
                         , endpoint = flags.oidcEndpoint 
                         }
-                        , gotToken t  
+                        , fetchKey flags.oidcEndpoint t.kid  
                     )
 
                 Err e ->
@@ -125,12 +137,14 @@ subscriptions _ =
         , tokenVerified TokenVerified
         , forgotToken SignedOut]
 
+
+
 type Msg
     = NoOp
     | RememberSession
     | GotSession Value
+    | GotKey (Result String KeySet)
     | TokenVerified Value
-    | SignedIn String
     | SignOut
     | SignedOut String
 
@@ -165,6 +179,20 @@ redirectToAuthEndpoint e s =
             |> Result.map Url.toString
             |> Result.map load
 
+tokenFromState : Model -> Result String String
+tokenFromState model = 
+    let
+        token s = case s of
+            LoggingIn tkn -> Ok tkn
+            _ -> Err "Bad state" 
+    in
+        model.status 
+            |> Result.andThen token
+            
+type alias VerifiableToken =
+    { jwt : String
+    , jwk : Value
+    }
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -185,7 +213,20 @@ update msg model =
                     |> Result.andThen (redirectToAuthEndpoint model.endpoint)
                     |> Result.withDefault Cmd.none 
             )
+        GotKey response ->
+            let
+                key = response
+                    |> Result.andThen getKey
+                
+                token = tokenFromState model
 
+                toJs = Result.map2 VerifiableToken token key
+            in
+                case toJs of
+                    Ok v -> ( model , verifyToken v)
+                    Err m -> ( { model | status = Err m}, Cmd.none )
+
+            
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
@@ -193,9 +234,6 @@ update msg model =
 
                 _ ->
                     ( { model | status = Err "Verify jwt failed" }, Cmd.none )
-
-        SignedIn token ->
-            ( model, gotToken token )
 
         SignOut ->
             ( { model 
@@ -266,24 +304,3 @@ myEndpoint =
     , query = Nothing
     , fragment = Nothing
     }
-
-
-oktaEndpoint : Url
-oktaEndpoint =
-    { protocol = Url.Https
-    , host = "dev-987804.oktapreview.com"
-    , port_ = Nothing
-    , path = ""
-    , query = Nothing
-    , fragment = Nothing
-    }
-
-
-auth : Url
-auth =
-    { oktaEndpoint | path = "/oauth2/default/v1/authorize" }
-
-
-signOutUrl : Url
-signOutUrl =
-    { oktaEndpoint | path = "/oauth2/default/v1/logout" }
