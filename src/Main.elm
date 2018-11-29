@@ -18,7 +18,7 @@ port rememberSession : () -> Cmd msg
 port sessionHandles : (Value -> msg) -> Sub msg
 
 
-port verifyToken : VerifiableToken -> Cmd msg
+port verifyToken : VerifyableJwt -> Cmd msg
 
 port tokenVerified : (Value -> msg) -> Sub msg
 
@@ -35,14 +35,6 @@ main =
         , update = update
         , view = view
         }
-
-
-type AuthNStatus
-    = NotLoggedIn
-    | Redirecting Value -- got nonce and state
-    | LoggingIn String -- got token from redirect
-    | LoggedIn String -- got verified token from js
-    | SigningOut -- cleared token from js
 
 type alias Model =
     { endpoint : Endpoint
@@ -74,23 +66,27 @@ type alias Flags =
     }
 
 
-checkCallback : String -> String -> String -> Result Error OidcLogin
+checkCallback : String -> String -> String -> Result Error SigninResponse
 checkCallback fragment state nonce =
     parseFragment fragment
         |> Result.andThen (getToken state)
         |> Result.andThen (assertNonce nonce)
 
-makeKeyResponse : String -> Result Http.Error String -> Msg
-makeKeyResponse kid response =
-    let
-        withKid = Result.map (KeySet kid) response
-            |> Result.mapError (always "Request errored.")
-    in
-        GotKey withKid
 
-fetchKey : Endpoint -> String -> Cmd Msg
-fetchKey ept kid = 
-    get { url = ept.keys, expect = expectString (makeKeyResponse kid) }  
+makeKeyResponse : SigninResponse -> Result Http.Error Jwks -> Msg
+makeKeyResponse signin response =
+    let
+        key = response
+            |> Result.mapError (always "Request errored.")
+            |> Result.andThen (getKey signin.kid) 
+            |> Result.map (VerifyableJwt signin.jwt)
+            
+    in
+        GotKey key
+
+fetchKey : Endpoint -> SigninResponse -> Cmd Msg
+fetchKey ept signin = 
+    get { url = ept.keys, expect = expectString (makeKeyResponse signin) }  
 
 
 init : Flags -> ( Model, Cmd Msg )
@@ -107,10 +103,10 @@ init flags =
             case res of
                 Ok t ->
                     ( 
-                        { status = Ok (LoggingIn t.token)
+                        { status = Ok Verifying
                         , endpoint = flags.oidcEndpoint 
                         }
-                        , fetchKey flags.oidcEndpoint t.kid  
+                        , fetchKey flags.oidcEndpoint t 
                     )
 
                 Err e ->
@@ -139,14 +135,7 @@ subscriptions _ =
 
 
 
-type Msg
-    = NoOp
-    | RememberSession
-    | GotSession Value
-    | GotKey (Result String KeySet)
-    | TokenVerified Value
-    | SignOut
-    | SignedOut String
+
 
 
 redirectToSignoutEndpoint : Endpoint -> String -> Result Error (Cmd msg)
@@ -179,21 +168,6 @@ redirectToAuthEndpoint e s =
             |> Result.map Url.toString
             |> Result.map load
 
-tokenFromState : Model -> Result String String
-tokenFromState model = 
-    let
-        token s = case s of
-            LoggingIn tkn -> Ok tkn
-            _ -> Err "Bad state" 
-    in
-        model.status 
-            |> Result.andThen token
-            
-type alias VerifiableToken =
-    { jwt : String
-    , jwk : Value
-    }
-
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -214,15 +188,7 @@ update msg model =
                     |> Result.withDefault Cmd.none 
             )
         GotKey response ->
-            let
-                key = response
-                    |> Result.andThen getKey
-                
-                token = tokenFromState model
-
-                toJs = Result.map2 VerifiableToken token key
-            in
-                case toJs of
+                case response of
                     Ok v -> ( model , verifyToken v)
                     Err m -> ( { model | status = Err m}, Cmd.none )
 
@@ -272,7 +238,7 @@ signInStatus s =
         NotLoggedIn ->
             signInButton
 
-        LoggingIn _ ->
+        Verifying ->
             Html.text "logging in..."
 
         LoggedIn t ->

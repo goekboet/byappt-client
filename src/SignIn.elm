@@ -74,7 +74,7 @@ parseFragment f =
         _ ->
             Err "Bad fragment format"
 
-getToken : String -> SigninFragment -> Result Error String
+getToken : String -> SigninFragment -> Result Error Jwk
 getToken state ( token, s ) =
     if s == state then
         Ok token
@@ -83,7 +83,7 @@ getToken state ( token, s ) =
         Err "Mismatching state"
 
 
-assertNonce : String -> String -> Result Error OidcLogin
+assertNonce : String -> String -> Result Error SigninResponse
 assertNonce nonce token =
     case String.split "." token of
         [ h, p, s ] ->
@@ -96,7 +96,7 @@ assertNonce nonce token =
                 getKeyId = decode h
                     |> Result.andThen readKid
             in
-                Result.map2 OidcLogin getKeyId checkNonce 
+                Result.map2 SigninResponse getKeyId checkNonce 
             
 
         _ ->

@@ -39,10 +39,10 @@ getValue val =
         Json.Decode.decodeValue valuefield val
             |> Result.mapError (always "malformed value")
 
-getKey : KeySet -> Result String Json.Decode.Value
-getKey mtl = 
-    Json.Decode.decodeString keysfield mtl.jwks
-        |> Result.map (List.filter (matchKid mtl.kid))
+getKey : Kid -> Jwks -> Result String Jwk
+getKey kid keyset = 
+    Json.Decode.decodeString keysfield keyset
+        |> Result.map (List.filter (matchKid kid))
         |> Result.mapError (always "malformed input")
         |> Result.map List.head
         |> Result.andThen (Result.fromMaybe "No key found")
