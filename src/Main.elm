@@ -1,29 +1,36 @@
-port module Main exposing (rememberSession, sessionHandles, verifyToken, tokenVerified, forgetToken, forgotToken)
+port module Main exposing (forgetToken, forgotToken, rememberSession, sessionRemebered, tokenVerified, verifyToken)
 
 import Browser exposing (Document, document)
 import Browser.Navigation exposing (load)
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
+import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import SignIn exposing (assertNonce, getToken, parseFragment, toAuthUrl, toSignOutUrl)
-import Discovery exposing (Endpoint, getKey)
+import SignIn exposing (..)
 import Types exposing (..)
 import Url exposing (Protocol(..), Url)
-import Http exposing (get, expectString)
 
 
 port rememberSession : () -> Cmd msg
 
 
-port sessionHandles : (Value -> msg) -> Sub msg
+port sessionRemebered : (Session -> msg) -> Sub msg
+
+
+port recallSession : String -> Cmd msg
+
+
+port sessionRecalled : (Maybe Nonce -> msg) -> Sub msg
 
 
 port verifyToken : VerifyableJwt -> Cmd msg
+
 
 port tokenVerified : (Value -> msg) -> Sub msg
 
 
 port forgetToken : () -> Cmd msg
+
 
 port forgotToken : (String -> msg) -> Sub msg
 
@@ -36,137 +43,131 @@ main =
         , view = view
         }
 
-type alias Model =
-    { endpoint : Endpoint
-    , status : Result String AuthNStatus 
-    }
 
-
-type alias Handles =
-    { state : String
-    , nonce : String
-    }
-
-
-fromJson : Value -> Result Error Handles
-fromJson =
+makeKeyResponse : SigninResponse -> Bool -> Result Http.Error Jwks -> Msg
+makeKeyResponse signin isRetry response =
     let
-        decode =
-            Json.Decode.map2 Handles (field "state" string) (field "nonce" string)
+        notFound k = case k of
+            Just x -> 
+                Ok (Just x)
+            Nothing -> 
+                if isRetry 
+                then Err "Key not found" 
+                else Ok Nothing
+
+        key =
+            response
+                |> Result.mapError (always "Request errored.")
+                |> Result.andThen (getKey signin.kid)
+                |> Result.andThen notFound
+                |> Result.map (VerifyableJwt signin.kid signin.jwt)
     in
-    Result.mapError (always "Bad json sessionHandles") << decodeValue decode
+    GotKey key
 
 
-type alias Flags =
-    { location : String
-    , oidcEndpoint : Endpoint
-    , state : Maybe String
-    , nonce : Maybe String
-    , token : Maybe String
-    }
-
-
-checkCallback : String -> String -> String -> Result Error SigninResponse
-checkCallback fragment state nonce =
-    parseFragment fragment
-        |> Result.andThen (getToken state)
-        |> Result.andThen (assertNonce nonce)
-
-
-makeKeyResponse : SigninResponse -> Result Http.Error Jwks -> Msg
-makeKeyResponse signin response =
+fetchKey : Endpoint -> Bool -> SigninResponse -> Cmd Msg
+fetchKey ept isRetry signin =
     let
-        key = response
-            |> Result.mapError (always "Request errored.")
-            |> Result.andThen (getKey signin.kid) 
-            |> Result.map (VerifyableJwt signin.jwt)
-            
-    in
-        GotKey key
+        cacheControl = 
+            if isRetry
+            then [ Http.header "Cache-Control" "no-cache" ]
+            else []
 
-fetchKey : Endpoint -> SigninResponse -> Cmd Msg
-fetchKey ept signin = 
-    get { url = ept.keys, expect = expectString (makeKeyResponse signin) }  
+        handleResponse =
+            makeKeyResponse signin isRetry
+    in
+    Http.request 
+        { method = "GET"
+        , headers = cacheControl
+        , url = ept.keys
+        , body = Http.emptyBody
+        , expect = Http.expectString handleResponse 
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+noUrl : Url
+noUrl =
+    { protocol = Url.Https
+    , host = ""
+    , port_ = Nothing
+    , path = ""
+    , query = Nothing
+    , fragment = Nothing
+    }
 
 
 init : Flags -> ( Model, Cmd Msg )
 init flags =
     let
-        fragment =
-            Maybe.andThen .fragment (Url.fromString flags.location)
+        origin =
+            Url.fromString flags.origin
 
-        tkn =
-            Maybe.map3 checkCallback fragment flags.state flags.nonce
+        status =
+            initialAuthN flags
     in
-    case tkn of
-        Just res ->
-            case res of
-                Ok t ->
-                    ( 
-                        { status = Ok Verifying
-                        , endpoint = flags.oidcEndpoint 
-                        }
-                        , fetchKey flags.oidcEndpoint t 
-                    )
+    case ( origin, status ) of
+        ( Nothing, _ ) ->
+            ( { endpoint = flags.oidcEndpoint
+              , origin = noUrl
+              , status = Err "Bad origin"
+              }
+            , Cmd.none
+            )
 
-                Err e ->
-                    ( 
-                        { status = Err e
-                        , endpoint = flags.oidcEndpoint
-                        }
-                        , Cmd.none 
-                    )
+        ( Just o, Err e ) ->
+            ( { endpoint = flags.oidcEndpoint
+              , origin = o
+              , status = Err e
+              }
+            , Cmd.none
+            )
 
-        Nothing ->
-            case flags.token of
-                Just t ->
-                    ( { status = Ok (LoggedIn t), endpoint = flags.oidcEndpoint }, Cmd.none )
+        ( Just o, Ok (LoggedIn t) ) ->
+            ( { endpoint = flags.oidcEndpoint
+              , origin = o
+              , status = Ok (LoggedIn t)
+              }
+            , Cmd.none
+            )
 
-                Nothing ->
-                    ( { status = Ok NotLoggedIn, endpoint = flags.oidcEndpoint }, Cmd.none )
+        ( Just o, Ok (Verifying fragment) ) ->
+            ( { endpoint = flags.oidcEndpoint
+              , origin = o
+              , status = Ok (Verifying fragment)
+              }
+            , recallSession fragment.state
+            )
+
+        ( Just o, _ ) ->
+            ( { endpoint = flags.oidcEndpoint
+              , origin = o
+              , status = Ok NotLoggedIn
+              }
+            , Cmd.none
+            )
 
 
 subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
-        [ sessionHandles GotSession
+        [ sessionRemebered SessionRemebered
         , tokenVerified TokenVerified
-        , forgotToken SignedOut]
+        , forgotToken SignedOut
+        , sessionRecalled SessionRecalled
+        ]
 
 
+redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
+redirectToSignoutEndpoint m t =
+    toSignOutUrl m.origin t m.endpoint
+        |> load
 
 
+redirectToAuthEndpoint : Model -> Session -> Cmd msg
+redirectToAuthEndpoint m s =
+    load (toAuthUrl m.origin m.endpoint s)
 
-
-redirectToSignoutEndpoint : Endpoint -> String -> Result Error (Cmd msg)
-redirectToSignoutEndpoint e t =
-    let
-        req =
-            { redirect = myEndpoint
-            , token = t
-            }
-    in
-        Result.fromMaybe "Bad signout endpoint" (Url.fromString e.endSession)
-            |> Result.map (\x -> toSignOutUrl x req)
-            |> Result.map Url.toString
-            |> Result.map load
-
-redirectToAuthEndpoint : Endpoint -> Handles -> Result Error (Cmd msg)
-redirectToAuthEndpoint e s =
-    let
-        request =
-            { clientId = "0oahdv4gzpBZwPM6S0h7"
-            , redirectUri = myEndpoint
-            , responseType = [ "id_token" ]
-            , scope = [ "openid" ]
-            , state = s.state
-            , nonce = s.nonce
-            }
-    in
-        Result.fromMaybe "Bad auth endpoint" (Url.fromString e.auth)
-            |> Result.map (\x -> toAuthUrl x request)
-            |> Result.map Url.toString
-            |> Result.map load
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -175,24 +176,50 @@ update msg model =
             ( model, Cmd.none )
 
         RememberSession ->
-            ( model , rememberSession () )
+            ( model, rememberSession () )
 
-        GotSession s ->
-            ( 
-                { model 
-                | status = Ok (Redirecting s) 
-                }
-                , 
-                fromJson s
-                    |> Result.andThen (redirectToAuthEndpoint model.endpoint)
-                    |> Result.withDefault Cmd.none 
+        SessionRemebered s ->
+            ( { model
+                | status = Ok Redirecting
+              }
+            , redirectToAuthEndpoint model s
             )
-        GotKey response ->
-                case response of
-                    Ok v -> ( model , verifyToken v)
-                    Err m -> ( { model | status = Err m}, Cmd.none )
 
-            
+        SessionRecalled n ->
+            case ( n, model.status ) of
+                ( Just nonce, Ok (Verifying f) ) ->
+                    let
+                        response =
+                            assertNonce nonce f.idtoken
+
+                        newStatus =
+                            response
+                                |> Result.map (always (Verifying f))
+                    in
+                    ( { model
+                        | status = newStatus
+                      }
+                    , response
+                        |> Result.map (fetchKey model.endpoint False)
+                        |> Result.withDefault Cmd.none 
+                    )
+
+                _ ->
+                    ( { model
+                        | status = Err "Session not found"
+                      }
+                    , Cmd.none
+                    )
+
+        GotKey response ->
+            case response of
+                Ok v -> case v.jwk of
+                    Just k -> ( model, verifyToken v )
+                    Nothing -> ( model, fetchKey model.endpoint True (SigninResponse v.kid v.jwt))
+
+                Err m ->
+                    ( { model | status = Err m }, Cmd.none )
+
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
@@ -202,16 +229,15 @@ update msg model =
                     ( { model | status = Err "Verify jwt failed" }, Cmd.none )
 
         SignOut ->
-            ( { model 
-              | status = Ok SigningOut
+            ( { model
+                | status = Ok SigningOut
               }
             , forgetToken ()
             )
-        
+
         SignedOut t ->
             ( model
-            , redirectToSignoutEndpoint model.endpoint t
-                |> Result.withDefault Cmd.none
+            , redirectToSignoutEndpoint model t
             )
 
 
@@ -238,7 +264,7 @@ signInStatus s =
         NotLoggedIn ->
             signInButton
 
-        Verifying ->
+        Verifying _ ->
             Html.text "logging in..."
 
         LoggedIn t ->
@@ -247,7 +273,7 @@ signInStatus s =
         SigningOut ->
             Html.text "Logging out"
 
-        Redirecting _ -> 
+        Redirecting ->
             Html.text "Redirecting."
 
 
@@ -259,14 +285,3 @@ signInButton =
 signOutButton : String -> Html Msg
 signOutButton token =
     Html.button [ onClick SignOut ] [ Html.text "Sign out" ]
-
-
-myEndpoint : Url
-myEndpoint =
-    { protocol = Url.Https
-    , host = "local.byappt"
-    , port_ = Nothing
-    , path = ""
-    , query = Nothing
-    , fragment = Nothing
-    }

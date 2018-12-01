@@ -1,64 +1,108 @@
-module Types exposing (..)
+module Types exposing (AuthNStatus(..), Endpoint, Error, Flags, Jwk, Jwks, Jwt, Kid, Model, Msg(..), Nonce, OidcAuthFragment, Origin, Session, SignOutRequest, SigninResponse, State, VerifyableJwt)
 
-import Url exposing (Url)
 import Json.Decode exposing (Value)
+import Url exposing (Url)
 
-type alias AuthRequest =
-    { clientId : String
-    , redirectUri : Url
-    , responseType : List String
-    , scope : List String
-    , state : String
-    , nonce : String
+
+type alias Model =
+    { endpoint : Endpoint
+    , origin : Url
+    , status : Result String AuthNStatus
     }
+
+
+type alias Origin =
+    Url
+
+
+type alias Flags =
+    { origin : String
+    , oidcEndpoint : Endpoint
+    , token : Maybe Jwt
+    }
+
+
+type alias Endpoint =
+    { clientId : String
+    , auth : String
+    , endSession : String
+    , keys : String
+    }
+
 
 type alias SignOutRequest =
     { redirect : Url
-    , token : String
+    , token : Jwt
     }
+
 
 type alias Error =
     String
 
+
+type alias OidcAuthFragment =
+    { idtoken : Jwt
+    , state : State
+    }
+
+
 type AuthNStatus
     = NotLoggedIn
-    | Redirecting Value -- got nonce and state
-    | Verifying 
-    | LoggedIn String -- got verified token from js
+    | Redirecting -- got nonce and state
+    | Verifying OidcAuthFragment
+    | LoggedIn Jwt -- got verified token from js
     | SigningOut -- cleared token from js
+
 
 type Msg
     = NoOp
     | RememberSession
-    | GotSession Value
+    | SessionRemebered Session
+    | SessionRecalled (Maybe Nonce)
     | GotKey (Result String VerifyableJwt)
     | TokenVerified Value
     | SignOut
     | SignedOut String
 
-type alias State = String
 
-type alias Nonce = String
+type alias State =
+    String
+
+
+type alias Nonce =
+    String
+
 
 type alias Session =
-    { state : State
+    { key : State
     , nonce : Nonce
     }
 
-type alias Kid = String
 
-type alias Jwt = String
+type alias Kid =
+    String
 
-type alias Jwk = Value
 
-type alias Jwks = String
+type alias Jwt =
+    String
+
+
+type alias Jwk =
+    Value
+
+
+type alias Jwks =
+    String
+
 
 type alias SigninResponse =
     { kid : Kid
     , jwt : Jwt
     }
 
+
 type alias VerifyableJwt =
-    { jwt : Jwt
-    , jwk : Jwk
+    { kid : Kid
+    , jwt : Jwt
+    , jwk : Maybe Jwk
     }
