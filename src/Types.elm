@@ -1,5 +1,7 @@
 module Types exposing (AuthNStatus(..), Endpoint, Error, Flags, Jwk, Jwks, Jwt, Kid, Model, Msg(..), Nonce, OidcAuthFragment, Origin, Session, SignOutRequest, SigninResponse, State, VerifyableJwt)
 
+import Browser exposing (..)
+import Browser.Navigation exposing (Key)
 import Json.Decode exposing (Value)
 import Url exposing (Url)
 
@@ -7,6 +9,7 @@ import Url exposing (Url)
 type alias Model =
     { endpoint : Endpoint
     , origin : Url
+    , navKey : Key
     , status : Result String AuthNStatus
     }
 
@@ -16,14 +19,14 @@ type alias Origin =
 
 
 type alias Flags =
-    { origin : String
-    , oidcEndpoint : Endpoint
+    { oidcEndpoint : Endpoint
     , token : Maybe Jwt
     }
 
 
 type alias Endpoint =
     { clientId : String
+    , authRedirect : String
     , auth : String
     , endSession : String
     , keys : String
@@ -63,6 +66,8 @@ type Msg
     | TokenVerified Value
     | SignOut
     | SignedOut String
+    | ChangedUrl Url
+    | ClickedLink Browser.UrlRequest
 
 
 type alias State =

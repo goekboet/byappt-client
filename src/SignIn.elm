@@ -2,7 +2,8 @@ module SignIn exposing
     ( assertNonce
     , getKey
     , getToken
-    , initialAuthN
+    , getValue
+    , parseInitialUrl
     , toAuthUrl
     , toSignOutUrl
     )
@@ -10,16 +11,17 @@ module SignIn exposing
 import Base64 as Base64
 import Json.Decode as Json exposing (Decoder)
 import Types exposing (..)
-import Url as Url
+import Url as Url exposing (Url)
 import Url.Builder as ToUrl
+import Url.Parser as Parse exposing (Parser)
 
 
-toAuthUrl : Origin -> Endpoint -> Session -> String
-toAuthUrl origin ept s =
+toAuthUrl : Endpoint -> Session -> String
+toAuthUrl ept s =
     let
         query =
             [ ToUrl.string "client_id" ept.clientId
-            , ToUrl.string "redirect_uri" <| redirectUrl origin
+            , ToUrl.string "redirect_uri" ept.authRedirect
             , ToUrl.string "response_type" "id_token"
             , ToUrl.string "scope" "openid"
             , ToUrl.string "state" s.key
@@ -29,21 +31,12 @@ toAuthUrl origin ept s =
     ToUrl.crossOrigin ept.auth [] query
 
 
-redirectUrl : Origin -> String
-redirectUrl o =
-    let
-        redirect =
-            { o | query = Nothing, fragment = Nothing }
-    in
-    Url.toString redirect
-
-
-toSignOutUrl : Origin -> Jwt -> Endpoint -> String
-toSignOutUrl origin token ept =
+toSignOutUrl : Jwt -> Endpoint -> String
+toSignOutUrl token ept =
     let
         query =
             [ ToUrl.string "id_token_hint" token
-            , ToUrl.string "post_logout_redirect_uri" <| redirectUrl origin
+            , ToUrl.string "post_logout_redirect_uri" ept.authRedirect
             ]
     in
     ToUrl.crossOrigin ept.endSession [] query
@@ -59,40 +52,46 @@ queryString =
     String.concat << List.intersperse "&"
 
 
-initialAuthN : Flags -> Result Error AuthNStatus
-initialAuthN f =
-    let
-        fragment =
-            Url.fromString f.origin
-                |> Maybe.andThen .fragment
-                |> Maybe.andThen parseFragment
-    in
-    case ( f.token, fragment ) of
-        ( _, Just (Err e) ) ->
-            Err e
 
-        ( _, Just (Ok oicdFgm) ) ->
-            Ok (Verifying oicdFgm)
-
-        ( Nothing, Nothing ) ->
-            Ok NotLoggedIn
-
-        ( Just t, Nothing ) ->
-            Ok (LoggedIn t)
+-- If the app was requested through a redirect from the
+-- oidc provider there will be a fragment in the url that
+-- is either a signinfragment or an error. This function parses
+-- that fragment to an appropriate route
 
 
-parseFragment : String -> Maybe (Result Error OidcAuthFragment)
-parseFragment f =
-    let
-        parse =
-            List.map (String.split "=") << String.split "&"
-    in
-    case parse f of
+toAuthFragment : Maybe String -> Maybe (Result Error OidcAuthFragment)
+toAuthFragment fgmt =
+    case fgmt of
+        Just f ->
+            parseSigninFragment f
+
+        _ ->
+            Nothing
+
+
+parseQueryString : String -> List (List String)
+parseQueryString =
+    List.map (String.split "=") << String.split "&"
+
+
+parseSigninFragment : String -> Maybe (Result Error OidcAuthFragment)
+parseSigninFragment f =
+    case parseQueryString f of
         [ [ "id_token", a ], [ "state", b ] ] ->
-            Just (Ok (OidcAuthFragment a b))
+            Just (Ok <| OidcAuthFragment a b)
 
-        [ [ "state", _ ], [ "error", msg ] ] ->
-            Just (Err msg)
+        [ [ "state", _ ], [ "error", e ], [ "error_description", desc ] ] ->
+            Just (Err <| String.join " " [ e, desc ])
+
+        _ ->
+            Nothing
+
+
+parseInitialUrl : Url -> Maybe (Result Error OidcAuthFragment)
+parseInitialUrl url =
+    case Parse.parse (Parse.fragment toAuthFragment) url of
+        Just x ->
+            x
 
         _ ->
             Nothing
@@ -160,7 +159,7 @@ keysfield =
     Json.field "keys" (Json.list Json.value)
 
 
-matchKid : String -> Json.Value -> Bool
+matchKid : Kid -> Jwk -> Bool
 matchKid kid val =
     let
         kidfield =
@@ -171,7 +170,7 @@ matchKid kid val =
         |> Result.withDefault False
 
 
-getValue : Json.Value -> Result String String
+getValue : Jwk -> Result String String
 getValue val =
     let
         valuefield =

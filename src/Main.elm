@@ -1,7 +1,7 @@
 port module Main exposing (forgetToken, forgotToken, rememberSession, sessionRemebered, tokenVerified, verifyToken)
 
-import Browser exposing (Document, document)
-import Browser.Navigation exposing (load)
+import Browser exposing (..)
+import Browser.Navigation as Nav
 import Html exposing (Html, button, div, text)
 import Html.Events exposing (onClick)
 import Http as Http
@@ -36,24 +36,30 @@ port forgotToken : (String -> msg) -> Sub msg
 
 
 main =
-    document
+    application
         { init = init
         , subscriptions = subscriptions
         , update = update
         , view = view
+        , onUrlRequest = ClickedLink
+        , onUrlChange = ChangedUrl
         }
 
 
 makeKeyResponse : SigninResponse -> Bool -> Result Http.Error Jwks -> Msg
 makeKeyResponse signin isRetry response =
     let
-        notFound k = case k of
-            Just x -> 
-                Ok (Just x)
-            Nothing -> 
-                if isRetry 
-                then Err "Key not found" 
-                else Ok Nothing
+        notFound k =
+            case k of
+                Just x ->
+                    Ok (Just x)
+
+                Nothing ->
+                    if isRetry then
+                        Err "Key not found"
+
+                    else
+                        Ok Nothing
 
         key =
             response
@@ -68,84 +74,64 @@ makeKeyResponse signin isRetry response =
 fetchKey : Endpoint -> Bool -> SigninResponse -> Cmd Msg
 fetchKey ept isRetry signin =
     let
-        cacheControl = 
-            if isRetry
-            then [ Http.header "Cache-Control" "no-cache" ]
-            else []
+        cacheControl =
+            if isRetry then
+                [ Http.header "Cache-Control" "no-cache" ]
+
+            else
+                []
 
         handleResponse =
             makeKeyResponse signin isRetry
     in
-    Http.request 
+    Http.request
         { method = "GET"
         , headers = cacheControl
         , url = ept.keys
         , body = Http.emptyBody
-        , expect = Http.expectString handleResponse 
+        , expect = Http.expectString handleResponse
         , timeout = Nothing
         , tracker = Nothing
         }
 
-noUrl : Url
-noUrl =
-    { protocol = Url.Https
-    , host = ""
-    , port_ = Nothing
-    , path = ""
-    , query = Nothing
-    , fragment = Nothing
-    }
 
-
-init : Flags -> ( Model, Cmd Msg )
-init flags =
+init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url key =
     let
-        origin =
-            Url.fromString flags.origin
+        signinFragment =
+            parseInitialUrl url
 
-        status =
-            initialAuthN flags
+        model =
+            { endpoint = flags.oidcEndpoint
+            , origin = url
+            , navKey = key
+            , status = Ok NotLoggedIn
+            }
     in
-    case ( origin, status ) of
-        ( Nothing, _ ) ->
-            ( { endpoint = flags.oidcEndpoint
-              , origin = noUrl
-              , status = Err "Bad origin"
+    case ( signinFragment, flags.token ) of
+        ( Just (Ok fgmt), _ ) ->
+            ( { model
+                | status = Ok (Verifying fgmt)
+              }
+            , recallSession fgmt.state
+            )
+
+        ( Just (Err msg), _ ) ->
+            ( { model
+                | status = Err msg
               }
             , Cmd.none
             )
 
-        ( Just o, Err e ) ->
-            ( { endpoint = flags.oidcEndpoint
-              , origin = o
-              , status = Err e
+        ( Nothing, Just jwt ) ->
+            ( { model
+                | status = Ok (LoggedIn jwt)
               }
             , Cmd.none
             )
 
-        ( Just o, Ok (LoggedIn t) ) ->
-            ( { endpoint = flags.oidcEndpoint
-              , origin = o
-              , status = Ok (LoggedIn t)
-              }
-            , Cmd.none
-            )
-
-        ( Just o, Ok (Verifying fragment) ) ->
-            ( { endpoint = flags.oidcEndpoint
-              , origin = o
-              , status = Ok (Verifying fragment)
-              }
-            , recallSession fragment.state
-            )
-
-        ( Just o, _ ) ->
-            ( { endpoint = flags.oidcEndpoint
-              , origin = o
-              , status = Ok NotLoggedIn
-              }
-            , Cmd.none
-            )
+        _ ->
+            ( model, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
@@ -160,13 +146,13 @@ subscriptions _ =
 
 redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
 redirectToSignoutEndpoint m t =
-    toSignOutUrl m.origin t m.endpoint
-        |> load
+    toSignOutUrl t m.endpoint
+        |> Nav.load
 
 
 redirectToAuthEndpoint : Model -> Session -> Cmd msg
 redirectToAuthEndpoint m s =
-    load (toAuthUrl m.origin m.endpoint s)
+    Nav.load (toAuthUrl m.endpoint s)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -201,7 +187,7 @@ update msg model =
                       }
                     , response
                         |> Result.map (fetchKey model.endpoint False)
-                        |> Result.withDefault Cmd.none 
+                        |> Result.withDefault Cmd.none
                     )
 
                 _ ->
@@ -213,9 +199,13 @@ update msg model =
 
         GotKey response ->
             case response of
-                Ok v -> case v.jwk of
-                    Just k -> ( model, verifyToken v )
-                    Nothing -> ( model, fetchKey model.endpoint True (SigninResponse v.kid v.jwt))
+                Ok v ->
+                    case v.jwk of
+                        Just k ->
+                            ( model, verifyToken v )
+
+                        Nothing ->
+                            ( model, fetchKey model.endpoint True (SigninResponse v.kid v.jwt) )
 
                 Err m ->
                     ( { model | status = Err m }, Cmd.none )
@@ -239,6 +229,12 @@ update msg model =
             ( model
             , redirectToSignoutEndpoint model t
             )
+
+        ChangedUrl url ->
+            ( model, Cmd.none )
+
+        ClickedLink req ->
+            ( model, Cmd.none )
 
 
 view : Model -> Document Msg

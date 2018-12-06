@@ -24,15 +24,11 @@
 		window.crypto.getRandomValues(arr)
 		return Array.from(arr, dec2hex).join('')
 	}
-	var o = window.location.href;
-	var f = window.location.hash;
-	window.location.hash = "";
 
 	var fs = {
-		origin: o,
-		fragment: f,
 		oidcEndpoint: {
 			clientId: "0oahdv4gzpBZwPM6S0h7",
+			authRedirect: "https://local.byappt",
 			auth: "https://dev-987804.oktapreview.com/oauth2/default/v1/authorize",
 			keys: "https://dev-987804.oktapreview.com/oauth2/default/v1/keys",
 			endSession: "https://dev-987804.oktapreview.com/oauth2/default/v1/logout"
