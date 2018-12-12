@@ -1,0 +1,15 @@
+body {
+    background-color: darkgray;
+}
+
+h1.homelink {
+    font-size: 3em;
+    padding-left: 16px;
+    color: black;
+    margin-bottom: 0.5em;
+    margin-top: 0em;
+}
+
+a:link, a:visited, a:hover, a:active {
+    text-decoration: none;
+}

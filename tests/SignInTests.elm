@@ -1,6 +1,6 @@
 module SignInTests exposing (case1, case1Expect, case2, case2Expect, case3, case3Expect, expectedAuthUrl, expectedSignOutUrl, expectedSigninResponse, getValueOfMatchingKey, isOk, mockKeyDoc, parseFromString, rightKey, someAuthEndpoint, someAuthRedirect, someClientId, someEndSessionEndpoint, someEndpoint, someError, someKeySetEndpoint, someNonce, someOtherNonce, someSession, someState, someToken, suite, tokenWithNonce)
 
-import Expect exposing (Expectation)
+import Expect exposing (..)
 import SignIn exposing (..)
 import Test exposing (..)
 import Types exposing (..)

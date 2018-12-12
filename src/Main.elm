@@ -2,13 +2,16 @@ port module Main exposing (forgetToken, forgotToken, rememberSession, sessionRem
 
 import Browser exposing (..)
 import Browser.Navigation as Nav
-import Html exposing (Html, button, div, text)
+import Home exposing (..)
+import Html as Html exposing (Html)
+import Html.Attributes as Attr
 import Html.Events exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
 import SignIn exposing (..)
 import Types exposing (..)
-import Url exposing (Protocol(..), Url)
+import Url as Url exposing (Protocol(..), Url)
+import Route exposing (Route(..))
 
 
 port rememberSession : () -> Cmd msg
@@ -94,6 +97,9 @@ fetchKey ept isRetry signin =
         , tracker = Nothing
         }
 
+stripFragment : Url -> String
+stripFragment url =
+    Url.toString { url | fragment = Nothing }
 
 init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
@@ -103,9 +109,9 @@ init flags url key =
 
         model =
             { endpoint = flags.oidcEndpoint
-            , origin = url
             , navKey = key
-            , status = Ok NotLoggedIn
+            , status = Ok NotSignedIn
+            , route = Home
             }
     in
     case ( signinFragment, flags.token ) of
@@ -120,12 +126,13 @@ init flags url key =
             ( { model
                 | status = Err msg
               }
-            , Cmd.none
+            , Nav.replaceUrl model.navKey (stripFragment url) 
             )
 
         ( Nothing, Just jwt ) ->
             ( { model
-                | status = Ok (LoggedIn jwt)
+                | status = Ok (SignedIn jwt)
+                , route = Route.toRoute url
               }
             , Cmd.none
             )
@@ -213,7 +220,7 @@ update msg model =
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
-                    ( { model | status = Ok (LoggedIn t) }, Cmd.none )
+                    ( { model | status = Ok (SignedIn t) }, Cmd.none )
 
                 _ ->
                     ( { model | status = Err "Verify jwt failed" }, Cmd.none )
@@ -240,44 +247,28 @@ update msg model =
 view : Model -> Document Msg
 view m =
     { title = "OpenId Connect with okta and elm"
-    , body = [ loginComponent m.status ]
+    , body = body <| index (Result.withDefault NotSignedIn m.status) 
     }
 
+homeLink : Html Msg
+homeLink =
+    Html.a
+        [ Attr.href "/" ]
+        [ Html.h1
+            [ Attr.class "homelink" ]
+            [ Html.text "Byappt" ] 
+        ]
 
-loginComponent : Result String AuthNStatus -> Html Msg
-loginComponent r =
-    case r of
-        Ok status ->
-            signInStatus status
-
-        Err msg ->
-            Html.text msg
-
-
-signInStatus : AuthNStatus -> Html Msg
-signInStatus s =
-    case s of
-        NotLoggedIn ->
-            signInButton
-
-        Verifying _ ->
-            Html.text "logging in..."
-
-        LoggedIn t ->
-            signOutButton t
-
-        SigningOut ->
-            Html.text "Logging out"
-
-        Redirecting ->
-            Html.text "Redirecting."
-
-
-signInButton : Html Msg
-signInButton =
-    Html.button [ onClick <| RememberSession ] [ Html.text "Sign in" ]
-
-
-signOutButton : String -> Html Msg
-signOutButton token =
-    Html.button [ onClick SignOut ] [ Html.text "Sign out" ]
+body : Html Msg -> List (Html Msg)
+body content =
+    [ Html.div
+        [ Attr.style "max-width" "32em"
+        , Attr.style "margin" "auto"
+        , Attr.style "padding-top" "1em"
+        , Attr.style "padding-bottom" "1em"
+        , Attr.style "background-color" "gainsboro"
+        ]
+        [ homeLink 
+        , content 
+        ]
+    ]

@@ -1,21 +1,18 @@
-module Types exposing (AuthNStatus(..), Endpoint, Error, Flags, Jwk, Jwks, Jwt, Kid, Model, Msg(..), Nonce, OidcAuthFragment, Origin, Session, SignOutRequest, SigninResponse, State, VerifyableJwt)
+module Types exposing (AuthNStatus(..), Endpoint, Error, Flags, Jwk, Jwks, Jwt, Kid, Model, Msg(..), Nonce, OidcAuthFragment, Session, SignOutRequest, SigninResponse, State, VerifyableJwt)
 
 import Browser exposing (..)
 import Browser.Navigation exposing (Key)
 import Json.Decode exposing (Value)
 import Url exposing (Url)
+import Route exposing (Route)
 
 
 type alias Model =
     { endpoint : Endpoint
-    , origin : Url
     , navKey : Key
     , status : Result String AuthNStatus
+    , route : Route 
     }
-
-
-type alias Origin =
-    Url
 
 
 type alias Flags =
@@ -50,10 +47,10 @@ type alias OidcAuthFragment =
 
 
 type AuthNStatus
-    = NotLoggedIn
+    = NotSignedIn
     | Redirecting -- got nonce and state
     | Verifying OidcAuthFragment
-    | LoggedIn Jwt -- got verified token from js
+    | SignedIn Jwt -- got verified token from js
     | SigningOut -- cleared token from js
 
 
