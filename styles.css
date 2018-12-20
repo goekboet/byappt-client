@@ -1,15 +1,98 @@
 body {
-    background-color: darkgray;
+    padding: 0;
+    margin: 0;
 }
 
-h1.homelink {
-    font-size: 3em;
-    padding-left: 16px;
-    color: black;
-    margin-bottom: 0.5em;
-    margin-top: 0em;
+ul {
+    list-style-type: none;
+    margin: 0;
+    padding: 0;
 }
 
-a:link, a:visited, a:hover, a:active {
+a {
+    margin: 0;
+    padding: 0;
     text-decoration: none;
+    font-size: medium;
+    font-family: sans-serif;
 }
+
+h1 {
+    font-family: sans-serif;
+    font-size: xx-large;
+}
+
+h2 {
+    font-family: sans-serif;
+    font-size: x-large;
+}
+
+table {
+    table-layout: fixed;
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+}
+
+tbody tr:nth-child(even) {
+    background-color: snow;
+}
+
+td {
+    padding: 0.25em 0em;
+}
+
+td:first-child, th:first-child {
+    padding-left: 1em;
+}
+
+td > a {
+    color: darkslategray;
+}
+
+th {
+    background-color: snow;
+    font-family: sans-serif;
+    font-weight: bold;
+    border-bottom: solid;
+    border-width: thin;
+    padding-top: 1em;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: 16em auto
+}
+
+.header {
+    grid-column: 1 / span 2;
+    background-color: cornflowerblue;
+    padding: 20px;
+}
+
+.header h1 {
+    margin: auto;
+    color: azure;
+}
+
+.sideBar {
+    background-color: lavender;
+    padding: 10px 0px;
+}
+
+div.sideBar a {
+    padding: 10px 20px;
+    display: block;
+}
+
+.content {
+    background-color: whitesmoke;
+    padding: 20px;
+}
+
+content h2 {
+    background-color: cornflowerblue;
+    margin: 0;
+    padding: 0;
+}
+

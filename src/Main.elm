@@ -2,16 +2,18 @@ port module Main exposing (forgetToken, forgotToken, rememberSession, sessionRem
 
 import Browser exposing (..)
 import Browser.Navigation as Nav
-import Home exposing (..)
+import Dict as Dict
 import Html as Html exposing (Html)
 import Html.Attributes as Attr
-import Html.Events exposing (onClick)
+import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
+import Mockdata as Mocked
+import Route exposing (HostId, Route(..), toRoute)
 import SignIn exposing (..)
 import Types exposing (..)
 import Url as Url exposing (Protocol(..), Url)
-import Route exposing (Route(..))
+import Url.Builder as BuildUrl
 
 
 port rememberSession : () -> Cmd msg
@@ -97,9 +99,26 @@ fetchKey ept isRetry signin =
         , tracker = Nothing
         }
 
-stripFragment : Url -> String
-stripFragment url =
-    Url.toString { url | fragment = Nothing }
+
+route : Nav.Key -> Url -> Cmd Msg
+route key url =
+    let
+        mapRootToHome =
+            if url.path == "/" then
+                hostsUrl
+
+            else
+                url.path
+
+        mapped =
+            Url.toString
+                { url
+                    | fragment = Nothing
+                    , path = mapRootToHome
+                }
+    in
+    Nav.replaceUrl key mapped
+
 
 init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
@@ -111,7 +130,7 @@ init flags url key =
             { endpoint = flags.oidcEndpoint
             , navKey = key
             , status = Ok NotSignedIn
-            , route = Home
+            , route = Hosts
             }
     in
     case ( signinFragment, flags.token ) of
@@ -126,7 +145,7 @@ init flags url key =
             ( { model
                 | status = Err msg
               }
-            , Nav.replaceUrl model.navKey (stripFragment url) 
+            , route key url
             )
 
         ( Nothing, Just jwt ) ->
@@ -134,11 +153,15 @@ init flags url key =
                 | status = Ok (SignedIn jwt)
                 , route = Route.toRoute url
               }
-            , Cmd.none
+            , route key url
             )
 
         _ ->
-            ( model, Cmd.none )
+            ( { model
+                | route = Route.toRoute url
+              }
+            , route key url
+            )
 
 
 subscriptions : Model -> Sub Msg
@@ -220,7 +243,7 @@ update msg model =
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
-                    ( { model | status = Ok (SignedIn t) }, Cmd.none )
+                    ( { model | status = Ok (SignedIn t) }, Nav.replaceUrl model.navKey hostsUrl )
 
                 _ ->
                     ( { model | status = Err "Verify jwt failed" }, Cmd.none )
@@ -241,34 +264,199 @@ update msg model =
             ( model, Cmd.none )
 
         ClickedLink req ->
-            ( model, Cmd.none )
+            case req of
+                Internal url ->
+                    ( { model
+                        | route = toRoute url
+                      }
+                    , Nav.pushUrl model.navKey <| Url.toString url
+                    )
+
+                External url ->
+                    ( model
+                    , Nav.load url
+                    )
 
 
 view : Model -> Document Msg
 view m =
-    { title = "OpenId Connect with okta and elm"
-    , body = body <| index (Result.withDefault NotSignedIn m.status) 
+    { title = "ByAppt"
+    , body = [ grid m ]
     }
 
-homeLink : Html Msg
-homeLink =
-    Html.a
-        [ Attr.href "/" ]
-        [ Html.h1
-            [ Attr.class "homelink" ]
-            [ Html.text "Byappt" ] 
+
+grid : Model -> Html Msg
+grid model =
+    Html.div
+        [ Attr.class "grid" ]
+        [ Html.div [ Attr.class "header" ] [ header model ]
+        , Html.div [ Attr.class "sideBar" ] [ sideBar model ]
+        , Html.div [ Attr.class "content" ] (content model)
         ]
 
-body : Html Msg -> List (Html Msg)
-body content =
-    [ Html.div
-        [ Attr.style "max-width" "32em"
-        , Attr.style "margin" "auto"
-        , Attr.style "padding-top" "1em"
-        , Attr.style "padding-bottom" "1em"
-        , Attr.style "background-color" "gainsboro"
+
+header : Model -> Html Msg
+header model =
+    Html.h1 [] [ Html.text "Byappt" ]
+
+
+topMenu : Model -> Html Msg
+topMenu model =
+    Html.ul
+        []
+        [ Html.li [] [ signinLink model ]
         ]
-        [ homeLink 
-        , content 
+
+
+sideBar : Model -> Html Msg
+sideBar model =
+    Html.ul
+        []
+        [ Html.li [] [ hostsLink model ]
+        , Html.li [] [ myAppointmentsLink model ]
+        ]
+
+
+hostsUrl : String
+hostsUrl =
+    BuildUrl.absolute [ "hosts" ] []
+
+
+hostsLink : Model -> Html Msg
+hostsLink model =
+    Html.a
+        [ Attr.href hostsUrl ]
+        [ Html.text "Hosts" ]
+
+
+bookingsUrl : String
+bookingsUrl =
+    BuildUrl.absolute [ "bookings" ] []
+
+
+myAppointmentsLink : Model -> Html Msg
+myAppointmentsLink model =
+    case Result.withDefault NotSignedIn model.status of
+        SignedIn _ ->
+            Html.a
+                [ Attr.href bookingsUrl ]
+                [ Html.text "MyBookings" ]
+
+        _ ->
+            signinLink model
+
+
+content : Model -> List (Html Msg)
+content model =
+    case model.route of
+        Hosts ->
+            hostsTable
+
+        Appointments hostId ->
+            appointmentsTable hostId
+
+        MyBookings ->
+            [ Html.p [] [ Html.text "My bookings" ] ]
+
+        Error msg ->
+            errorPage msg
+
+        _ ->
+            [ Html.p [] [ Html.text "Not found" ] ]
+
+
+errorPage : String -> List (Html Msg)
+errorPage msg =
+    [ Html.h2 [] [ Html.text "Error" ]
+    , Html.p [] [ Html.text msg ]
+    ]
+
+
+appointmentUrl : HostId -> String
+appointmentUrl hostId =
+    BuildUrl.relative
+        [ "hosts"
+        , hostId
+        , "appointments"
+        ]
+        []
+
+
+hostsTable : List (Html Msg)
+hostsTable =
+    [ Html.h2 [] [ Html.text "Hosts" ]
+    , Html.table []
+        [ Html.thead []
+            [ Html.tr []
+                [ Html.th [] [ Html.text "Name" ] ]
+            ]
+        , Html.tbody []
+            (List.map
+                (\x ->
+                    Html.tr []
+                        [ Html.td []
+                            [ Html.a
+                                [ Attr.href (appointmentUrl x.id) ]
+                                [ Html.text x.name ]
+                            ]
+                        ]
+                )
+                Mocked.hosts
+            )
         ]
     ]
+
+
+appointmentsTable : HostId -> List (Html Msg)
+appointmentsTable hostId =
+    let
+        appts =
+            Dict.get hostId Mocked.appointments
+                |> Maybe.withDefault []
+    in
+    [ Html.h2 [] [ Html.text "Availiable appointments:" ]
+    , Html.table []
+        [ Html.thead []
+            [ Html.tr []
+                [ Html.th [] [ Html.text "Start" ]
+                , Html.th [] [ Html.text "Duration" ]
+                , Html.th [] [ Html.text "Book" ]
+                ]
+            ]
+        , Html.tbody []
+            (List.map
+                (\x ->
+                    Html.tr []
+                        [ Html.td [] [ Html.text x.start ]
+                        , Html.td [] [ Html.text (String.fromInt x.duration) ]
+                        , Html.td [] [ Html.button [] [ Html.text "Book" ] ]
+                        ]
+                )
+                appts
+            )
+        ]
+    ]
+
+
+signinLink : Model -> Html Msg
+signinLink model =
+    case Result.withDefault NotSignedIn model.status of
+        NotSignedIn ->
+            Html.a
+                [ Event.onClick RememberSession ]
+                [ Html.text "Sign in" ]
+
+        SignedIn _ ->
+            Html.a
+                [ Event.onClick SignOut ]
+                [ Html.text "Sign out" ]
+
+        SigningOut ->
+            Html.a
+                []
+                [ Html.text "Signing out" ]
+
+        _ ->
+            Html.a
+                []
+                [ Html.text "Signing in" ]

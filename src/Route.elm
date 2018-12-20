@@ -1,16 +1,16 @@
-module Route exposing (toRoute, Route(..))
+module Route exposing (..)
 
 import Url.Parser as Parse exposing (Parser, (</>), string, parse)
 import Url as Url exposing (Url)
+import Url.Parser.Query as Query
 
-type alias HostId = String
 
 type Route 
-    = Home
-    | Hosts
+    = Hosts
     | Appointments HostId
     | MyBookings
     | NotFound
+    | Error String
 
 toRoute : Url -> Route
 toRoute url =
@@ -18,10 +18,28 @@ toRoute url =
 
 parser : Parser (Route -> a) a
 parser =
+    let
+        msg = Query.string "msg"
+            |> Parse.query
+
+        toError = Maybe.withDefault NotFound 
+            << Maybe.map Error
+    in
     Parse.oneOf
-        [ Parse.map Home Parse.top
-        , Parse.map Hosts (Parse.s "hosts")
+        [ Parse.map Hosts (Parse.s "hosts")
         , Parse.map Appointments (Parse.s "hosts" </> string </> Parse.s "appointments")
         , Parse.map MyBookings (Parse.s "bookings")
+        , Parse.map toError (Parse.s "error" </> msg)
         ]
 
+type alias HostId = String
+
+type alias Host =
+    { id : HostId
+    , name : String
+    }
+
+type alias Appointment =
+    { start : String
+    , duration : Int
+    }
