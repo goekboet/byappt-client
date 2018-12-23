@@ -8,8 +8,8 @@ import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import Mockdata as Mocked
-import Route exposing (HostId, Route(..), toRoute)
+import Appointment exposing (mockHosts, mockAppointments, Host, HostId)
+import Route exposing (Route(..), toRoute)
 import SignIn exposing (..)
 import Types exposing (..)
 import Url as Url exposing (Protocol(..), Url)
@@ -117,20 +117,23 @@ route key url =
                     , path = mapRootToHome
                 }
     in
-    Nav.replaceUrl key mapped
+    Nav.pushUrl key mapped
 
 
 init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
     let
-        signinFragment =
-            parseInitialUrl url
+        signinFragment = parseInitialUrl url
+        
+        next = toRoute url
+        host = hostFromRoute next 
 
         model =
             { endpoint = flags.oidcEndpoint
             , navKey = key
             , status = Ok NotSignedIn
-            , route = Hosts
+            , route = next
+            , currentHost = host
             }
     in
     case ( signinFragment, flags.token ) of
@@ -151,7 +154,6 @@ init flags url key =
         ( Nothing, Just jwt ) ->
             ( { model
                 | status = Ok (SignedIn jwt)
-                , route = Route.toRoute url
               }
             , route key url
             )
@@ -266,8 +268,13 @@ update msg model =
         ClickedLink req ->
             case req of
                 Internal url ->
+                    let
+                        next = toRoute url
+                        host = hostFromRoute next 
+                    in
                     ( { model
-                        | route = toRoute url
+                        | route = next
+                        , currentHost = host
                       }
                     , Nav.pushUrl model.navKey <| Url.toString url
                     )
@@ -277,6 +284,16 @@ update msg model =
                     , Nav.load url
                     )
 
+hostFromRoute : Route -> Maybe Host
+hostFromRoute r = case r of
+    Appointments id -> getHost id mockHosts
+    _ -> Nothing
+
+
+getHost : HostId -> List Host -> Maybe Host
+getHost id hosts = case List.filter (\h -> h.id == id) hosts of
+    [ host ] -> Just host
+    _ -> Nothing
 
 view : Model -> Document Msg
 view m =
@@ -299,34 +316,33 @@ header : Model -> Html Msg
 header model =
     Html.h1 [] [ Html.text "Byappt" ]
 
-
-topMenu : Model -> Html Msg
-topMenu model =
-    Html.ul
-        []
-        [ Html.li [] [ signinLink model ]
-        ]
-
-
 sideBar : Model -> Html Msg
 sideBar model =
     Html.ul
         []
-        [ Html.li [] [ hostsLink model ]
+        [ Html.li [] (hostsLink model)
         , Html.li [] [ myAppointmentsLink model ]
+        , Html.li [] [ signInLink model]
         ]
-
 
 hostsUrl : String
 hostsUrl =
     BuildUrl.absolute [ "hosts" ] []
 
 
-hostsLink : Model -> Html Msg
+hostsLink : Model -> List (Html Msg)
 hostsLink model =
-    Html.a
+    let
+        hostName = Maybe.map .name model.currentHost
+            |> Maybe.map (\h -> Html.i [] [Html.text h])
+            |> Maybe.withDefault (Html.text "")
+
+    in
+    [ Html.a
         [ Attr.href hostsUrl ]
-        [ Html.text "Hosts" ]
+        [ Html.text "Hosts" 
+        ]
+     , hostName ]
 
 
 bookingsUrl : String
@@ -340,10 +356,13 @@ myAppointmentsLink model =
         SignedIn _ ->
             Html.a
                 [ Attr.href bookingsUrl ]
-                [ Html.text "MyBookings" ]
+                [ Html.text "Bookings" ]
 
         _ ->
-            signinLink model
+            Html.a
+                [ Attr.disabled True
+                , Attr.title "Sign in to access Bookings"]
+                [ Html.text "Bookings"]
 
 
 content : Model -> List (Html Msg)
@@ -356,7 +375,7 @@ content model =
             appointmentsTable hostId
 
         MyBookings ->
-            [ Html.p [] [ Html.text "My bookings" ] ]
+            [ Html.h2 [] [ Html.text "My bookings" ] ]
 
         Error msg ->
             errorPage msg
@@ -401,7 +420,7 @@ hostsTable =
                             ]
                         ]
                 )
-                Mocked.hosts
+                mockHosts
             )
         ]
     ]
@@ -411,7 +430,7 @@ appointmentsTable : HostId -> List (Html Msg)
 appointmentsTable hostId =
     let
         appts =
-            Dict.get hostId Mocked.appointments
+            Dict.get hostId mockAppointments
                 |> Maybe.withDefault []
     in
     [ Html.h2 [] [ Html.text "Availiable appointments:" ]
@@ -438,8 +457,8 @@ appointmentsTable hostId =
     ]
 
 
-signinLink : Model -> Html Msg
-signinLink model =
+signInLink : Model -> Html Msg
+signInLink model =
     case Result.withDefault NotSignedIn model.status of
         NotSignedIn ->
             Html.a

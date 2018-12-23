@@ -3,6 +3,7 @@ module Route exposing (..)
 import Url.Parser as Parse exposing (Parser, (</>), string, parse)
 import Url as Url exposing (Url)
 import Url.Parser.Query as Query
+import Appointment exposing (..)
 
 
 type Route 
@@ -32,14 +33,4 @@ parser =
         , Parse.map toError (Parse.s "error" </> msg)
         ]
 
-type alias HostId = String
 
-type alias Host =
-    { id : HostId
-    , name : String
-    }
-
-type alias Appointment =
-    { start : String
-    , duration : Int
-    }

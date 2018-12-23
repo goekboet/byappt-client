@@ -9,6 +9,10 @@ ul {
     padding: 0;
 }
 
+li {
+    display: flex;
+}
+
 a {
     margin: 0;
     padding: 0;
@@ -77,12 +81,29 @@ th {
 
 .sideBar {
     background-color: lavender;
-    padding: 10px 0px;
+    padding: 20px 0px;
+}
+
+.sideBar i {
+    margin: 0;
+    padding: 0;
+    text-decoration: none;
+    font-size: medium;
+    font-family: sans-serif;
 }
 
 div.sideBar a {
-    padding: 10px 20px;
+    color: cornflowerblue;
+    padding: 10px 0px 10px 20px;
     display: block;
+    font-weight: bolder;
+}
+
+div.sideBar i {
+    color: cornflowerblue;
+    padding: 10px 0px 10px 20px;
+    display: block;
+    font-style: normal;
 }
 
 .content {

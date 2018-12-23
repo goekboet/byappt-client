@@ -4,7 +4,8 @@ import Browser exposing (..)
 import Browser.Navigation exposing (Key)
 import Json.Decode exposing (Value)
 import Url exposing (Url)
-import Route exposing (Route)
+import Route exposing (..)
+import Appointment exposing (..)
 
 
 type alias Model =
@@ -12,6 +13,7 @@ type alias Model =
     , navKey : Key
     , status : Result String AuthNStatus
     , route : Route 
+    , currentHost: Maybe Host
     }
 
 
