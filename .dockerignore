@@ -1,0 +1,8 @@
+.git
+.gitignore
+bashfs.sh
+notes.txt
+README.md
+dist
+elm-stuff
+node_modules
