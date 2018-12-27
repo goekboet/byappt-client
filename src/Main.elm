@@ -140,6 +140,7 @@ init flags url key =
         ( Just (Ok fgmt), _ ) ->
             ( { model
                 | status = Ok (Verifying fgmt)
+                , route = Hosts
               }
             , recallSession fgmt.state
             )
