@@ -2,7 +2,7 @@ module Appointment exposing (..)
 
 import Dict exposing (..)
 import Time exposing (..)
-
+import Json.Decode as D
 
 
 type alias HostId = String
@@ -40,18 +40,15 @@ startOfMonday z t =
     in 
          millisToPosix <| (posixToMillis t) - (hs + m + s + ms + offset)
 
-mockHosts : List Host
-mockHosts =
-    [ { id = "HostId1"
-      , name = "Adam"
-      }
-    , { id = "HostId2"
-      , name = "Bertil"
-      }
-    , { id = "HostId3"
-      , name = "Calle"
-      }
-    ]
+readHost : D.Decoder Host
+readHost = D.map2 Host 
+    (D.field "hostId" D.string)
+    (D.field "friendlyName" D.string)
+
+readHostResponse : D.Decoder (List Host)
+readHostResponse = D.list readHost
+
+
 
 mockAppointments : Dict HostId (List Appointment)
 mockAppointments = fromList

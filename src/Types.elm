@@ -6,14 +6,15 @@ import Json.Decode exposing (Value)
 import Url exposing (Url)
 import Route exposing (..)
 import Appointment exposing (..)
+import Set exposing (..)
 
 
 type alias Model =
     { endpoint : Endpoint
     , navKey : Key
-    , status : Result String AuthNStatus
-    , route : Route 
-    , currentHost: Maybe Host
+    , status : AuthNStatus
+    , route : Route
+    , hosts : List Host
     }
 
 
@@ -67,6 +68,7 @@ type Msg
     | SignedOut String
     | ChangedUrl Url
     | ClickedLink Browser.UrlRequest
+    | GotHosts (Result String (List Host))
 
 
 type alias State =

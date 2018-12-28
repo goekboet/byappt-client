@@ -8,12 +8,13 @@ import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import Appointment exposing (mockHosts, mockAppointments, Host, HostId)
+import Appointment as Appt exposing (mockAppointments, Host, HostId)
 import Route exposing (Route(..), toRoute)
 import SignIn exposing (..)
 import Types exposing (..)
 import Url as Url exposing (Protocol(..), Url)
 import Url.Builder as BuildUrl
+import Set as Set
 
 
 port rememberSession : () -> Cmd msg
@@ -126,35 +127,32 @@ init flags url key =
         signinFragment = parseInitialUrl url
         
         next = toRoute url
-        host = hostFromRoute next 
 
         model =
             { endpoint = flags.oidcEndpoint
             , navKey = key
-            , status = Ok NotSignedIn
+            , status = NotSignedIn
             , route = next
-            , currentHost = host
+            , hosts = []
             }
     in
     case ( signinFragment, flags.token ) of
         ( Just (Ok fgmt), _ ) ->
             ( { model
-                | status = Ok (Verifying fgmt)
+                | status = Verifying fgmt
                 , route = Hosts
               }
             , recallSession fgmt.state
             )
 
         ( Just (Err msg), _ ) ->
-            ( { model
-                | status = Err msg
-              }
-            , route key url
+            ( model
+            , routeToError model msg
             )
 
         ( Nothing, Just jwt ) ->
             ( { model
-                | status = Ok (SignedIn jwt)
+                | status = SignedIn jwt
               }
             , route key url
             )
@@ -187,6 +185,17 @@ redirectToAuthEndpoint : Model -> Session -> Cmd msg
 redirectToAuthEndpoint m s =
     Nav.load (toAuthUrl m.endpoint s)
 
+switchToRoute : Model -> Url -> ( Model, Cmd Msg )
+switchToRoute model url =
+    let
+        next = toRoute url
+    in
+    ( { model
+        | route = next
+      }
+    , Cmd.batch 
+        [ Nav.pushUrl model.navKey <| Url.toString url]
+    )
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -199,36 +208,19 @@ update msg model =
 
         SessionRemebered s ->
             ( { model
-                | status = Ok Redirecting
+                | status = Redirecting
               }
             , redirectToAuthEndpoint model s
             )
 
         SessionRecalled n ->
             case ( n, model.status ) of
-                ( Just nonce, Ok (Verifying f) ) ->
-                    let
-                        response =
-                            assertNonce nonce f.idtoken
-
-                        newStatus =
-                            response
-                                |> Result.map (always (Verifying f))
-                    in
-                    ( { model
-                        | status = newStatus
-                      }
-                    , response
-                        |> Result.map (fetchKey model.endpoint False)
-                        |> Result.withDefault Cmd.none
-                    )
-
+                ( Just nonce, Verifying f ) ->
+                    case assertNonce nonce f.idtoken of
+                        Ok r -> ( model, fetchKey model.endpoint False r )
+                        Err m -> ( { model | status = NotSignedIn }, routeToError model m )
                 _ ->
-                    ( { model
-                        | status = Err "Session not found"
-                      }
-                    , Cmd.none
-                    )
+                    ( { model | status = NotSignedIn }, routeToError model "No nonce in localstorage." )
 
         GotKey response ->
             case response of
@@ -241,19 +233,19 @@ update msg model =
                             ( model, fetchKey model.endpoint True (SigninResponse v.kid v.jwt) )
 
                 Err m ->
-                    ( { model | status = Err m }, Cmd.none )
+                    ( { model | status = NotSignedIn }, routeToError model m )
 
         TokenVerified s ->
             case decodeValue string s of
                 Ok t ->
-                    ( { model | status = Ok (SignedIn t) }, Nav.replaceUrl model.navKey hostsUrl )
+                    ( { model | status = SignedIn t }, Nav.replaceUrl model.navKey hostsUrl )
 
                 _ ->
-                    ( { model | status = Err "Verify jwt failed" }, Cmd.none )
+                    ( { model | status = NotSignedIn }, routeToError model "Bad jwt" )
 
         SignOut ->
             ( { model
-                | status = Ok SigningOut
+                | status = SigningOut
               }
             , forgetToken ()
             )
@@ -263,38 +255,90 @@ update msg model =
             , redirectToSignoutEndpoint model t
             )
 
-        ChangedUrl url ->
-            ( model, Cmd.none )
+        ChangedUrl url -> 
+            ( model
+            , Cmd.batch 
+                [ fetchData model.route
+                ]
+            )
 
         ClickedLink req ->
             case req of
-                Internal url ->
+                Internal url -> 
                     let
                         next = toRoute url
-                        host = hostFromRoute next 
                     in
-                    ( { model
-                        | route = next
-                        , currentHost = host
-                      }
-                    , Nav.pushUrl model.navKey <| Url.toString url
-                    )
+                        ( { model
+                            | route = next
+                          }
+                        , Cmd.batch 
+                            [ Nav.pushUrl model.navKey <| Url.toString url]
+                        )
 
                 External url ->
                     ( model
                     , Nav.load url
                     )
 
-hostFromRoute : Route -> Maybe Host
+        GotHosts r -> gotHostData model r
+
+hostsReq : Cmd Msg
+hostsReq =  
+    let
+        r fromApi = GotHosts <| Result.mapError (always "httperror") fromApi     
+    in
+    Http.get
+    { url = "https://local.byappt/api/hosts" 
+    , expect = Http.expectJson r Appt.readHostResponse
+    }  
+
+-- Hosts --
+
+hostFromRoute : Route -> Maybe HostId
 hostFromRoute r = case r of
-    Appointments id -> getHost id mockHosts
+    Appointments id -> Just id
     _ -> Nothing
 
+fetchData : Route -> Cmd Msg
+fetchData r = case r of
+    Hosts -> hostsReq
+    _ -> Cmd.none
 
 getHost : HostId -> List Host -> Maybe Host
 getHost id hosts = case List.filter (\h -> h.id == id) hosts of
     [ host ] -> Just host
     _ -> Nothing
+
+gotHostData : Model -> Result String (List Host) -> (Model, Cmd Msg)
+gotHostData m res =
+    case res of
+        Err msg -> ( m, routeToError m msg)
+        Ok hs ->
+            ( { m | hosts = hs }, Cmd.none)
+
+hostsTable : Model -> List (Html Msg)
+hostsTable m =
+    [ Html.h2 [] [ Html.text "Hosts" ]
+    , Html.table []
+        [ Html.thead []
+            [ Html.tr []
+                [ Html.th [] [ Html.text "Name" ] ]
+            ]
+        , Html.tbody []
+            (List.map
+                (\x ->
+                    Html.tr []
+                        [ Html.td []
+                            [ Html.a
+                                [ Attr.href (appointmentUrl x.id) ]
+                                [ Html.text x.name ]
+                            ]
+                        ]
+                )
+                m.hosts
+            )
+        ]
+    ]
 
 view : Model -> Document Msg
 view m =
@@ -330,11 +374,21 @@ hostsUrl : String
 hostsUrl =
     BuildUrl.absolute [ "hosts" ] []
 
+getHostFrom : Model -> Maybe Host
+getHostFrom model =
+    let
+        hostId = hostFromRoute model.route
+        findHost id = List.filter (\h -> h.id == id) model.hosts
+        host = Maybe.map findHost hostId
+    in
+    case host of
+        Just [h] -> Just h
+        _ -> Nothing
 
 hostsLink : Model -> List (Html Msg)
 hostsLink model =
     let
-        hostName = Maybe.map .name model.currentHost
+        hostName = Maybe.map .name (getHostFrom model)
             |> Maybe.map (\h -> Html.i [] [Html.text h])
             |> Maybe.withDefault (Html.text "")
 
@@ -353,7 +407,7 @@ bookingsUrl =
 
 myAppointmentsLink : Model -> Html Msg
 myAppointmentsLink model =
-    case Result.withDefault NotSignedIn model.status of
+    case model.status of
         SignedIn _ ->
             Html.a
                 [ Attr.href bookingsUrl ]
@@ -370,7 +424,7 @@ content : Model -> List (Html Msg)
 content model =
     case model.route of
         Hosts ->
-            hostsTable
+            hostsTable model
 
         Appointments hostId ->
             appointmentsTable hostId
@@ -384,6 +438,11 @@ content model =
         _ ->
             [ Html.p [] [ Html.text "Not found" ] ]
 
+errorUrl : String -> String
+errorUrl msg = BuildUrl.absolute [ "error" ] [ BuildUrl.string "msg" msg ]
+
+routeToError : Model -> String -> Cmd Msg
+routeToError m msg = Nav.pushUrl m.navKey <| errorUrl msg
 
 errorPage : String -> List (Html Msg)
 errorPage msg =
@@ -402,29 +461,7 @@ appointmentUrl hostId =
         []
 
 
-hostsTable : List (Html Msg)
-hostsTable =
-    [ Html.h2 [] [ Html.text "Hosts" ]
-    , Html.table []
-        [ Html.thead []
-            [ Html.tr []
-                [ Html.th [] [ Html.text "Name" ] ]
-            ]
-        , Html.tbody []
-            (List.map
-                (\x ->
-                    Html.tr []
-                        [ Html.td []
-                            [ Html.a
-                                [ Attr.href (appointmentUrl x.id) ]
-                                [ Html.text x.name ]
-                            ]
-                        ]
-                )
-                mockHosts
-            )
-        ]
-    ]
+
 
 
 appointmentsTable : HostId -> List (Html Msg)
@@ -460,7 +497,7 @@ appointmentsTable hostId =
 
 signInLink : Model -> Html Msg
 signInLink model =
-    case Result.withDefault NotSignedIn model.status of
+    case model.status of
         NotSignedIn ->
             Html.a
                 [ Event.onClick RememberSession ]
