@@ -3,7 +3,6 @@ module SignInTests exposing (case1, case1Expect, case2, case2Expect, case3, case
 import Expect exposing (..)
 import SignIn exposing (..)
 import Test exposing (..)
-import Types exposing (..)
 import Url exposing (Protocol(..), Url)
 
 
@@ -130,7 +129,7 @@ case3Expect =
     Nothing
 
 
-parseFromString : String -> Maybe (Result Error OidcAuthFragment)
+parseFromString : String -> Maybe (Result String OidcAuthFragment)
 parseFromString s =
     case Url.fromString s of
         Just url ->
@@ -168,7 +167,7 @@ isOk r =
             False
 
 
-getValueOfMatchingKey : Kid -> Jwks -> Maybe (Result Error String)
+getValueOfMatchingKey : Kid -> Jwks -> Maybe (Result String String)
 getValueOfMatchingKey kid keyset =
     getKey kid keyset
         |> Result.withDefault Nothing

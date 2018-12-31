@@ -1,9 +1,8 @@
-module Appointment exposing (..)
+module Host exposing (..)
 
 import Dict exposing (..)
 import Time exposing (..)
 import Json.Decode as D
-
 
 type alias HostId = String
 

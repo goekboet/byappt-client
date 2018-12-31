@@ -1,20 +1,65 @@
-port module Main exposing (forgetToken, forgotToken, rememberSession, sessionRemebered, tokenVerified, verifyToken)
+port module Main exposing (
+    forgetToken, 
+    forgotToken, 
+    rememberSession, 
+    sessionRemebered, 
+    tokenVerified, 
+    verifyToken,
+    Route(..),
+    toRoute)
 
 import Browser exposing (..)
 import Browser.Navigation as Nav
 import Dict as Dict
+import Host as Host exposing (mockAppointments, Host, HostId)
 import Html as Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import Appointment as Appt exposing (mockAppointments, Host, HostId)
-import Route exposing (Route(..), toRoute)
-import SignIn exposing (..)
-import Types exposing (..)
+import Url.Parser as FromUrl exposing (Parser, (</>))
+import Url.Parser.Query as Query
+import Set as Set
+import SignIn as S exposing (..)
 import Url as Url exposing (Protocol(..), Url)
 import Url.Builder as BuildUrl
-import Set as Set
+
+
+type alias Model =
+    { endpoint : Endpoint
+    , navKey : Nav.Key
+    , status : AuthNStatus
+    , route : Route
+    , hosts : List Host
+    }
+
+
+type Msg
+    = NoOp
+    | RememberSession
+    | SessionRemebered Session
+    | SessionRecalled (Maybe Nonce)
+    | GotKey (Result String VerifyableJwt)
+    | TokenVerified Value
+    | SignOut
+    | SignedOut String
+    | ChangedUrl Url
+    | ClickedLink Browser.UrlRequest
+    | GotHosts (Result String (List Host))
+
+
+type alias Flags =
+    { oidcEndpoint : Endpoint
+    , token : Maybe Jwt
+    }
+
+
+type AuthNStatus
+    = NotSignedIn
+    | Redirecting -- got nonce and state
+    | Verifying OidcAuthFragment
+    | SignedIn Jwt -- got verified token from js
+    | SigningOut -- cleared token from js
 
 
 port rememberSession : () -> Cmd msg
@@ -50,6 +95,158 @@ main =
         , onUrlRequest = ClickedLink
         , onUrlChange = ChangedUrl
         }
+
+
+init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url key =
+    let
+        signinFragment =
+            S.parseInitialUrl url
+
+        next =
+            toRoute url
+
+        model =
+            { endpoint = flags.oidcEndpoint
+            , navKey = key
+            , status = NotSignedIn
+            , route = next
+            , hosts = []
+            }
+    in
+    case ( signinFragment, flags.token ) of
+        ( Just (Ok fgmt), _ ) ->
+            ( { model
+                | status = Verifying fgmt
+                , route = Hosts
+              }
+            , recallSession fgmt.state
+            )
+
+        ( Just (Err msg), _ ) ->
+            ( model
+            , routeToError model msg
+            )
+
+        ( Nothing, Just jwt ) ->
+            ( { model
+                | status = SignedIn jwt
+              }
+            , route key url
+            )
+
+        _ ->
+            ( { model
+                | route = toRoute url
+              }
+            , route key url
+            )
+
+
+subscriptions : Model -> Sub Msg
+subscriptions _ =
+    Sub.batch
+        [ sessionRemebered SessionRemebered
+        , tokenVerified TokenVerified
+        , forgotToken SignedOut
+        , sessionRecalled SessionRecalled
+        ]
+
+
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model =
+    case msg of
+        NoOp ->
+            ( model, Cmd.none )
+
+        RememberSession ->
+            ( model, rememberSession () )
+
+        SessionRemebered s ->
+            ( { model
+                | status = Redirecting
+              }
+            , redirectToAuthEndpoint model s
+            )
+
+        SessionRecalled n ->
+            case ( n, model.status ) of
+                ( Just nonce, Verifying f ) ->
+                    case S.assertNonce nonce f.idtoken of
+                        Ok r ->
+                            ( model, fetchKey model.endpoint False r )
+
+                        Err m ->
+                            ( { model | status = NotSignedIn }, routeToError model m )
+
+                _ ->
+                    ( { model | status = NotSignedIn }, routeToError model "No nonce in localstorage." )
+
+        GotKey response ->
+            case response of
+                Ok v ->
+                    case v.jwk of
+                        Just k ->
+                            ( model, verifyToken v )
+
+                        Nothing ->
+                            ( model, fetchKey model.endpoint True (S.SigninResponse v.kid v.jwt) )
+
+                Err m ->
+                    ( { model | status = NotSignedIn }, routeToError model m )
+
+        TokenVerified s ->
+            case decodeValue string s of
+                Ok t ->
+                    ( { model | status = SignedIn t }, Nav.replaceUrl model.navKey (BuildUrl.absolute [ "hosts" ] []) )
+
+                _ ->
+                    ( { model | status = NotSignedIn }, routeToError model "Bad jwt" )
+
+        SignOut ->
+            ( { model
+                | status = SigningOut
+              }
+            , forgetToken ()
+            )
+
+        SignedOut t ->
+            ( model
+            , redirectToSignoutEndpoint model t
+            )
+
+        ChangedUrl url ->
+            ( model
+            , Cmd.batch
+                [ fetchData model.route
+                ]
+            )
+
+        ClickedLink req ->
+            case req of
+                Internal url ->
+                    let
+                        next =
+                            toRoute url
+                    in
+                    ( { model
+                        | route = next
+                      }
+                    , Cmd.batch
+                        [ Nav.pushUrl model.navKey <| Url.toString url ]
+                    )
+
+                External url ->
+                    ( model
+                    , Nav.load url
+                    )
+
+        GotHosts r ->
+            gotHostData model r
+
+
+
+-- Oidc Sign-in
 
 
 makeKeyResponse : SigninResponse -> Bool -> Result Http.Error Jwks -> Msg
@@ -101,12 +298,73 @@ fetchKey ept isRetry signin =
         }
 
 
+redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
+redirectToSignoutEndpoint m t =
+    toSignOutUrl t m.endpoint
+        |> Nav.load
+
+
+
+-- Routing
+
+
+type Route
+    = Hosts
+    | Appointments HostId
+    | MyBookings
+    | NotFound
+    | Error String
+
+
+parser : Parser (Route -> a) a
+parser =
+    let
+        msg =
+            Query.string "msg"
+                |> FromUrl.query
+
+        toError =
+            Maybe.withDefault NotFound
+                << Maybe.map Error
+    in
+    FromUrl.oneOf
+        [ FromUrl.map Hosts (FromUrl.s "hosts")
+        , FromUrl.map Appointments (FromUrl.s "hosts" </> FromUrl.string </> FromUrl.s "appointments")
+        , FromUrl.map MyBookings (FromUrl.s "bookings")
+        , FromUrl.map toError (FromUrl.s "error" </> msg)
+        ]
+
+
+toRoute : Url -> Route
+toRoute url =
+    Maybe.withDefault NotFound (FromUrl.parse parser url)
+
+
+redirectToAuthEndpoint : Model -> Session -> Cmd msg
+redirectToAuthEndpoint m s =
+    Nav.load (S.toAuthUrl m.endpoint s)
+
+
+switchToRoute : Model -> Url -> ( Model, Cmd Msg )
+switchToRoute model url =
+    let
+        next =
+            toRoute url
+    in
+    ( { model
+        | route = next
+      }
+    , Cmd.batch
+        [ Nav.pushUrl model.navKey <| Url.toString url ]
+    )
+
+
 route : Nav.Key -> Url -> Cmd Msg
 route key url =
     let
         mapRootToHome =
             if url.path == "/" then
-                hostsUrl
+                BuildUrl.absolute [ "hosts" ] []
 
             else
                 url.path
@@ -121,200 +379,61 @@ route key url =
     Nav.pushUrl key mapped
 
 
-init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
-init flags url key =
-    let
-        signinFragment = parseInitialUrl url
-        
-        next = toRoute url
-
-        model =
-            { endpoint = flags.oidcEndpoint
-            , navKey = key
-            , status = NotSignedIn
-            , route = next
-            , hosts = []
-            }
-    in
-    case ( signinFragment, flags.token ) of
-        ( Just (Ok fgmt), _ ) ->
-            ( { model
-                | status = Verifying fgmt
-                , route = Hosts
-              }
-            , recallSession fgmt.state
-            )
-
-        ( Just (Err msg), _ ) ->
-            ( model
-            , routeToError model msg
-            )
-
-        ( Nothing, Just jwt ) ->
-            ( { model
-                | status = SignedIn jwt
-              }
-            , route key url
-            )
-
-        _ ->
-            ( { model
-                | route = Route.toRoute url
-              }
-            , route key url
-            )
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.batch
-        [ sessionRemebered SessionRemebered
-        , tokenVerified TokenVerified
-        , forgotToken SignedOut
-        , sessionRecalled SessionRecalled
-        ]
-
-
-redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
-redirectToSignoutEndpoint m t =
-    toSignOutUrl t m.endpoint
-        |> Nav.load
-
-
-redirectToAuthEndpoint : Model -> Session -> Cmd msg
-redirectToAuthEndpoint m s =
-    Nav.load (toAuthUrl m.endpoint s)
-
-switchToRoute : Model -> Url -> ( Model, Cmd Msg )
-switchToRoute model url =
-    let
-        next = toRoute url
-    in
-    ( { model
-        | route = next
-      }
-    , Cmd.batch 
-        [ Nav.pushUrl model.navKey <| Url.toString url]
-    )
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        NoOp ->
-            ( model, Cmd.none )
-
-        RememberSession ->
-            ( model, rememberSession () )
-
-        SessionRemebered s ->
-            ( { model
-                | status = Redirecting
-              }
-            , redirectToAuthEndpoint model s
-            )
-
-        SessionRecalled n ->
-            case ( n, model.status ) of
-                ( Just nonce, Verifying f ) ->
-                    case assertNonce nonce f.idtoken of
-                        Ok r -> ( model, fetchKey model.endpoint False r )
-                        Err m -> ( { model | status = NotSignedIn }, routeToError model m )
-                _ ->
-                    ( { model | status = NotSignedIn }, routeToError model "No nonce in localstorage." )
-
-        GotKey response ->
-            case response of
-                Ok v ->
-                    case v.jwk of
-                        Just k ->
-                            ( model, verifyToken v )
-
-                        Nothing ->
-                            ( model, fetchKey model.endpoint True (SigninResponse v.kid v.jwt) )
-
-                Err m ->
-                    ( { model | status = NotSignedIn }, routeToError model m )
-
-        TokenVerified s ->
-            case decodeValue string s of
-                Ok t ->
-                    ( { model | status = SignedIn t }, Nav.replaceUrl model.navKey hostsUrl )
-
-                _ ->
-                    ( { model | status = NotSignedIn }, routeToError model "Bad jwt" )
-
-        SignOut ->
-            ( { model
-                | status = SigningOut
-              }
-            , forgetToken ()
-            )
-
-        SignedOut t ->
-            ( model
-            , redirectToSignoutEndpoint model t
-            )
-
-        ChangedUrl url -> 
-            ( model
-            , Cmd.batch 
-                [ fetchData model.route
-                ]
-            )
-
-        ClickedLink req ->
-            case req of
-                Internal url -> 
-                    let
-                        next = toRoute url
-                    in
-                        ( { model
-                            | route = next
-                          }
-                        , Cmd.batch 
-                            [ Nav.pushUrl model.navKey <| Url.toString url]
-                        )
-
-                External url ->
-                    ( model
-                    , Nav.load url
-                    )
-
-        GotHosts r -> gotHostData model r
-
 hostsReq : Cmd Msg
-hostsReq =  
+hostsReq =
     let
-        r fromApi = GotHosts <| Result.mapError (always "httperror") fromApi     
+        r fromApi =
+            GotHosts <| Result.mapError (always "httperror") fromApi
     in
     Http.get
-    { url = "https://local.byappt/api/hosts" 
-    , expect = Http.expectJson r Appt.readHostResponse
-    }  
+        { url = "https://local.byappt/api/hosts"
+        , expect = Http.expectJson r Host.readHostResponse
+        }
+
+
 
 -- Hosts --
 
+
 hostFromRoute : Route -> Maybe HostId
-hostFromRoute r = case r of
-    Appointments id -> Just id
-    _ -> Nothing
+hostFromRoute r =
+    case r of
+        Appointments id ->
+            Just id
+
+        _ ->
+            Nothing
+
 
 fetchData : Route -> Cmd Msg
-fetchData r = case r of
-    Hosts -> hostsReq
-    _ -> Cmd.none
+fetchData r =
+    case r of
+        Hosts ->
+            hostsReq
+
+        _ ->
+            Cmd.none
+
 
 getHost : HostId -> List Host -> Maybe Host
-getHost id hosts = case List.filter (\h -> h.id == id) hosts of
-    [ host ] -> Just host
-    _ -> Nothing
+getHost id hosts =
+    case List.filter (\h -> h.id == id) hosts of
+        [ host ] ->
+            Just host
 
-gotHostData : Model -> Result String (List Host) -> (Model, Cmd Msg)
+        _ ->
+            Nothing
+
+
+gotHostData : Model -> Result String (List Host) -> ( Model, Cmd Msg )
 gotHostData m res =
     case res of
-        Err msg -> ( m, routeToError m msg)
+        Err msg ->
+            ( m, routeToError m msg )
+
         Ok hs ->
-            ( { m | hosts = hs }, Cmd.none)
+            ( { m | hosts = hs }, Cmd.none )
+
 
 hostsTable : Model -> List (Html Msg)
 hostsTable m =
@@ -340,6 +459,7 @@ hostsTable m =
         ]
     ]
 
+
 view : Model -> Document Msg
 view m =
     { title = "ByAppt"
@@ -361,43 +481,57 @@ header : Model -> Html Msg
 header model =
     Html.h1 [] [ Html.text "Byappt" ]
 
+
 sideBar : Model -> Html Msg
 sideBar model =
     Html.ul
         []
         [ Html.li [] (hostsLink model)
         , Html.li [] [ myAppointmentsLink model ]
-        , Html.li [] [ signInLink model]
+        , Html.li [] [ signInLink model ]
         ]
 
-hostsUrl : String
-hostsUrl =
-    BuildUrl.absolute [ "hosts" ] []
+
+
+-- hostsUrl : String
+-- hostsUrl =
+--     BuildUrl.absolute [ "hosts" ] []
+
 
 getHostFrom : Model -> Maybe Host
 getHostFrom model =
     let
-        hostId = hostFromRoute model.route
-        findHost id = List.filter (\h -> h.id == id) model.hosts
-        host = Maybe.map findHost hostId
+        hostId =
+            hostFromRoute model.route
+
+        findHost id =
+            List.filter (\h -> h.id == id) model.hosts
+
+        host =
+            Maybe.map findHost hostId
     in
     case host of
-        Just [h] -> Just h
-        _ -> Nothing
+        Just [ h ] ->
+            Just h
+
+        _ ->
+            Nothing
+
 
 hostsLink : Model -> List (Html Msg)
 hostsLink model =
     let
-        hostName = Maybe.map .name (getHostFrom model)
-            |> Maybe.map (\h -> Html.i [] [Html.text h])
-            |> Maybe.withDefault (Html.text "")
-
+        hostName =
+            Maybe.map .name (getHostFrom model)
+                |> Maybe.map (\h -> Html.i [] [ Html.text h ])
+                |> Maybe.withDefault (Html.text "")
     in
     [ Html.a
-        [ Attr.href hostsUrl ]
-        [ Html.text "Hosts" 
+        [ Attr.href <| BuildUrl.absolute [ "hosts" ] [] ]
+        [ Html.text "Hosts"
         ]
-     , hostName ]
+    , hostName
+    ]
 
 
 bookingsUrl : String
@@ -416,8 +550,9 @@ myAppointmentsLink model =
         _ ->
             Html.a
                 [ Attr.disabled True
-                , Attr.title "Sign in to access Bookings"]
-                [ Html.text "Bookings"]
+                , Attr.title "Sign in to access Bookings"
+                ]
+                [ Html.text "Bookings" ]
 
 
 content : Model -> List (Html Msg)
@@ -438,11 +573,16 @@ content model =
         _ ->
             [ Html.p [] [ Html.text "Not found" ] ]
 
+
 errorUrl : String -> String
-errorUrl msg = BuildUrl.absolute [ "error" ] [ BuildUrl.string "msg" msg ]
+errorUrl msg =
+    BuildUrl.absolute [ "error" ] [ BuildUrl.string "msg" msg ]
+
 
 routeToError : Model -> String -> Cmd Msg
-routeToError m msg = Nav.pushUrl m.navKey <| errorUrl msg
+routeToError m msg =
+    Nav.pushUrl m.navKey <| errorUrl msg
+
 
 errorPage : String -> List (Html Msg)
 errorPage msg =
@@ -459,9 +599,6 @@ appointmentUrl hostId =
         , "appointments"
         ]
         []
-
-
-
 
 
 appointmentsTable : HostId -> List (Html Msg)

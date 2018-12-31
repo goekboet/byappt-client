@@ -1,20 +1,79 @@
-module SignIn exposing
-    ( assertNonce
-    , getKey
-    , getToken
-    , getValue
-    , parseInitialUrl
-    , toAuthUrl
-    , toSignOutUrl
-    )
+module SignIn exposing (..)
 
 import Base64 as Base64
 import Json.Decode as Json exposing (Decoder)
-import Types exposing (..)
 import Url as Url exposing (Url)
 import Url.Builder as ToUrl
 import Url.Parser as Parse exposing (Parser)
+import Http as Http exposing (Error) 
+import Json.Decode exposing (Value)
 
+type alias Endpoint =
+    { clientId : String
+    , authRedirect : String
+    , auth : String
+    , endSession : String
+    , keys : String
+    }
+
+type alias OidcAuthFragment =
+    { idtoken : Jwt
+    , state : State
+    }
+
+type alias Session =
+    { key : State
+    , nonce : Nonce
+    }
+
+type alias State =
+    String
+
+type alias Nonce =
+    String
+
+type alias Kid =
+    String
+
+
+type alias Jwk =
+    Value
+
+
+type alias VerifyableJwt =
+    { kid : Kid
+    , jwt : Jwt
+    , jwk : Maybe Jwk
+    }
+
+type alias SignOutRequest =
+    { redirect : Url
+    , token : Jwt
+    }
+
+type alias Jwks =
+    String
+
+
+type alias SigninResponse =
+    { kid : Kid
+    , jwt : Jwt
+    }
+
+type alias Jwt =
+    String
+
+
+
+
+kvp : String -> String -> String
+kvp k v =
+    String.concat [ k, "=", v ]
+
+
+queryString : List String -> String
+queryString =
+    String.concat << List.intersperse "&"
 
 toAuthUrl : Endpoint -> Session -> String
 toAuthUrl ept s =
@@ -41,25 +100,13 @@ toSignOutUrl token ept =
     in
     ToUrl.crossOrigin ept.endSession [] query
 
-
-kvp : String -> String -> String
-kvp k v =
-    String.concat [ k, "=", v ]
-
-
-queryString : List String -> String
-queryString =
-    String.concat << List.intersperse "&"
-
-
-
 -- If the app was requested through a redirect from the
 -- oidc provider there will be a fragment in the url that
 -- is either a signinfragment or an error. This function parses
 -- that fragment to an appropriate route
 
 
-toAuthFragment : Maybe String -> Maybe (Result Error OidcAuthFragment)
+toAuthFragment : Maybe String -> Maybe (Result String OidcAuthFragment)
 toAuthFragment fgmt =
     case fgmt of
         Just f ->
@@ -74,7 +121,7 @@ parseQueryString =
     List.map (String.split "=") << String.split "&"
 
 
-parseSigninFragment : String -> Maybe (Result Error OidcAuthFragment)
+parseSigninFragment : String -> Maybe (Result String OidcAuthFragment)
 parseSigninFragment f =
     case parseQueryString f of
         [ [ "id_token", a ], [ "state", b ] ] ->
@@ -87,7 +134,7 @@ parseSigninFragment f =
             Nothing
 
 
-parseInitialUrl : Url -> Maybe (Result Error OidcAuthFragment)
+parseInitialUrl : Url -> Maybe (Result String OidcAuthFragment)
 parseInitialUrl url =
     case Parse.parse (Parse.fragment toAuthFragment) url of
         Just x ->
@@ -97,7 +144,7 @@ parseInitialUrl url =
             Nothing
 
 
-getToken : State -> OidcAuthFragment -> Result Error Jwt
+getToken : State -> OidcAuthFragment -> Result String Jwt
 getToken s f =
     if s == f.state then
         Ok f.idtoken
@@ -106,7 +153,7 @@ getToken s f =
         Err "Mismatching state"
 
 
-assertNonce : Nonce -> Jwt -> Result Error SigninResponse
+assertNonce : Nonce -> Jwt -> Result String SigninResponse
 assertNonce nonce token =
     case String.split "." token of
         [ h, p, s ] ->
@@ -127,7 +174,7 @@ assertNonce nonce token =
             Err (String.join " " [ "malformed jwt-token:", token ])
 
 
-readNonce : String -> Result Error String
+readNonce : String -> Result String String
 readNonce =
     let
         nonce =
@@ -136,7 +183,7 @@ readNonce =
     Result.mapError (always "Unexpected Json") << Json.decodeString nonce
 
 
-readKid : String -> Result Error String
+readKid : String -> Result String String
 readKid =
     let
         kid =
@@ -145,7 +192,7 @@ readKid =
     Result.mapError (always "Unexpected json") << Json.decodeString kid
 
 
-validateNonce : String -> String -> Result Error ()
+validateNonce : String -> String -> Result String ()
 validateNonce ourNonce theirNonce =
     if ourNonce == theirNonce then
         Ok ()
@@ -186,3 +233,4 @@ getKey kid keyset =
         |> Result.map (List.filter (matchKid kid))
         |> Result.mapError (always "malformed input")
         |> Result.map List.head
+
