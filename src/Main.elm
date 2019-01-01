@@ -12,14 +12,13 @@ port module Main exposing
 import Browser exposing (..)
 import Browser.Navigation as Nav
 import Dict as Dict
-import Host as Host exposing (Host, HostId, mockAppointments)
+import Host as Host exposing (Appointment, HostId, Hosts)
 import Html as Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import Set as Set
-import SignIn as S exposing (..)
+import SignIn as S exposing (Endpoint, Jwks, Jwt, Nonce, OidcAuthFragment, Session, SigninResponse, VerifyableJwt)
 import Url as Url exposing (Protocol(..), Url)
 import Url.Builder as BuildUrl
 import Url.Parser as FromUrl exposing ((</>), Parser)
@@ -31,21 +30,8 @@ type alias Model =
     , navKey : Nav.Key
     , status : AuthNStatus
     , route : Route
+    , hosts : Maybe Hosts
     }
-
-
-type Msg
-    = NoOp
-    | RememberSession
-    | SessionRemebered Session
-    | SessionRecalled (Maybe Nonce)
-    | GotKey (Result String VerifyableJwt)
-    | TokenVerified Value
-    | SignOut
-    | SignedOut String
-    | ChangedUrl Url
-    | ClickedLink Browser.UrlRequest
-    | GotHosts (Result String (List Host))
 
 
 type alias Flags =
@@ -111,6 +97,7 @@ init flags url key =
             , navKey = key
             , status = NotSignedIn
             , route = next
+            , hosts = Nothing
             }
     in
     case ( signinFragment, flags.token ) of
@@ -150,6 +137,22 @@ subscriptions _ =
         , forgotToken SignedOut
         , sessionRecalled SessionRecalled
         ]
+
+
+type Msg
+    = NoOp
+    | RememberSession
+    | SessionRemebered Session
+    | SessionRecalled (Maybe Nonce)
+    | GotKey (Result String VerifyableJwt)
+    | TokenVerified Value
+    | SignOut
+    | SignedOut String
+    | ChangedUrl Url
+    | ClickedLink Browser.UrlRequest
+    | GotHosts (Result String Hosts)
+    | GotAppointments HostId (Result String (List Appointment))
+    | Book HostId String
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -215,25 +218,16 @@ update msg model =
             )
 
         ChangedUrl url ->
-            ( model
-            , Cmd.batch
-                [ fetchData model.route
-                ]
+            ( { model
+                | route = toRoute url
+              }
+            , fetchData (toRoute url)
             )
 
         ClickedLink req ->
             case req of
                 Internal url ->
-                    let
-                        next =
-                            toRoute url
-                    in
-                    ( { model
-                        | route = next
-                      }
-                    , Cmd.batch
-                        [ Nav.pushUrl model.navKey <| Url.toString url ]
-                    )
+                    ( model, Nav.pushUrl model.navKey <| Url.toString url )
 
                 External url ->
                     ( model
@@ -242,6 +236,11 @@ update msg model =
 
         GotHosts r ->
             gotHostData model r
+
+        GotAppointments hostId r ->
+            gotAppointmentsData model hostId r
+
+        Book hostId apptId -> (model, Cmd.none)
 
 
 
@@ -266,7 +265,7 @@ makeKeyResponse signin isRetry response =
         key =
             response
                 |> Result.mapError (always "Request errored.")
-                |> Result.andThen (getKey signin.kid)
+                |> Result.andThen (S.getKey signin.kid)
                 |> Result.andThen notFound
                 |> Result.map (VerifyableJwt signin.kid signin.jwt)
     in
@@ -299,7 +298,7 @@ fetchKey ept isRetry signin =
 
 redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
 redirectToSignoutEndpoint m t =
-    toSignOutUrl t m.endpoint
+    S.toSignOutUrl t m.endpoint
         |> Nav.load
 
 
@@ -309,7 +308,7 @@ redirectToSignoutEndpoint m t =
 
 type Route
     = Hosts
-    | Appointments HostId
+    | Appointments HostId (List Appointment)
     | MyBookings
     | NotFound
     | Error String
@@ -328,7 +327,7 @@ parser =
     in
     FromUrl.oneOf
         [ FromUrl.map Hosts (FromUrl.s "hosts")
-        , FromUrl.map Appointments (FromUrl.s "hosts" </> FromUrl.string </> FromUrl.s "appointments")
+        , FromUrl.map (\x -> Appointments x []) (FromUrl.s "hosts" </> FromUrl.string </> FromUrl.s "appointments")
         , FromUrl.map MyBookings (FromUrl.s "bookings")
         , FromUrl.map toError (FromUrl.s "error" </> msg)
         ]
@@ -378,6 +377,23 @@ route key url =
     Nav.pushUrl key mapped
 
 
+
+-- Hosts --
+
+
+fetchData : Route -> Cmd Msg
+fetchData r =
+    case r of
+        Hosts ->
+            hostsReq
+
+        Appointments hostId _ ->
+            apptsReq hostId
+
+        _ ->
+            Cmd.none
+
+
 hostsReq : Cmd Msg
 hostsReq =
     let
@@ -390,52 +406,53 @@ hostsReq =
         }
 
 
+apptsReq : HostId -> Cmd Msg
+apptsReq hostId =
+    let
+        withHostId hId appts =
+            GotAppointments hId appts
 
--- Hosts --
+        r fromApi =
+            withHostId hostId <| Result.mapError (always "httperror") fromApi
 
+        apptsUrl =
+            BuildUrl.absolute
+                [ "api"
+                , "hosts"
+                , hostId
+                , "appointments"
+                ]
+                []
+    in
+    Http.get
+        { url = apptsUrl
+        , expect = Http.expectJson r Host.readApointmentsResponse
+        }
 
-hostFromRoute : Route -> Maybe HostId
-hostFromRoute r =
-    case r of
-        Appointments id ->
-            Just id
+-- bookReq : HostId -> String -> Cmd Msg
 
-        _ ->
-            Nothing
-
-
-fetchData : Route -> Cmd Msg
-fetchData r =
-    case r of
-        Hosts ->
-            hostsReq
-
-        _ ->
-            Cmd.none
-
-
-getHost : HostId -> List Host -> Maybe Host
-getHost id hosts =
-    case List.filter (\h -> h.id == id) hosts of
-        [ host ] ->
-            Just host
-
-        _ ->
-            Nothing
-
-
-gotHostData : Model -> Result String (List Host) -> ( Model, Cmd Msg )
+gotHostData : Model -> Result String Hosts -> ( Model, Cmd Msg )
 gotHostData m res =
     case res of
         Err msg ->
             ( m, routeToError m msg )
 
         Ok hs ->
-            ( m, Cmd.none )
+            ( { m | hosts = Just hs }, Cmd.none )
 
 
-hostsTable : Model -> List (Html Msg)
-hostsTable m =
+gotAppointmentsData : Model -> HostId -> Result String (List Appointment) -> ( Model, Cmd Msg )
+gotAppointmentsData m hostId res =
+    case res of
+        Err msg ->
+            ( m, routeToError m msg )
+
+        Ok appts ->
+            ( { m | route = Appointments hostId appts }, Cmd.none )
+
+
+hostsTable : Maybe Hosts -> List (Html Msg)
+hostsTable hs =
     [ Html.h2 [] [ Html.text "Hosts" ]
     , Html.table []
         [ Html.thead []
@@ -444,19 +461,110 @@ hostsTable m =
             ]
         , Html.tbody []
             (List.map
-                (\x ->
+                (\( id, name ) ->
                     Html.tr []
                         [ Html.td []
                             [ Html.a
-                                [ Attr.href (appointmentUrl x.id) ]
-                                [ Html.text x.name ]
+                                [ Attr.href (appointmentUrl id) ]
+                                [ Html.text name ]
                             ]
                         ]
                 )
-                []
+                (Maybe.map Dict.toList hs
+                    |> Maybe.withDefault []
+                )
             )
         ]
     ]
+
+appointmentsTable : Model -> List Appointment -> List (Html Msg)
+appointmentsTable model appts =
+    let
+        book hostId apptId = case model.status of
+            SignedIn _ -> Html.button [ onClick (Book hostId apptId)] [ Html.text "Book" ]
+            _ -> Html.button [ Attr.disabled True ] [ Html.text "Book " ]
+    in
+    [ Html.h2 [] [ Html.text "Availiable appointments:" ]
+    , Html.table []
+        [ Html.thead []
+            [ Html.tr []
+                [ Html.th [] [ Html.text "Start" ]
+                , Html.th [] [ Html.text "Duration" ]
+                , Html.th [] [ Html.text "Book" ]
+                ]
+            ]
+        , Html.tbody []
+            (List.map
+                (\x ->
+                    Html.tr []
+                        [ Html.td [] [ Html.text (String.fromInt x.start) ]
+                        , Html.td [] [ Html.text (String.fromInt x.duration) ]
+                        , Html.td [] [ Html.button [] [ Html.text "Book" ] ]
+                        ]
+                )
+                appts
+            )
+        ]
+    ]
+
+hostsLink : Model -> Html Msg
+hostsLink model =
+    Html.a
+        [ Attr.href <| BuildUrl.absolute [ "hosts" ] [] ]
+        [ Html.text "Hosts"
+        ]
+
+
+
+-- Bookings, or made appointments
+
+
+bookingsUrl : String
+bookingsUrl =
+    BuildUrl.absolute [ "bookings" ] []
+
+
+myAppointmentsLink : Model -> Html Msg
+myAppointmentsLink model =
+    case model.status of
+        SignedIn _ ->
+            Html.a
+                [ Attr.href bookingsUrl ]
+                [ Html.text "Bookings" ]
+
+        _ ->
+            Html.a
+                [ Attr.disabled True
+                , Attr.title "Sign in to access Bookings"
+                ]
+                [ Html.text "Bookings" ]
+
+
+
+
+
+-- Error
+
+
+errorUrl : String -> String
+errorUrl msg =
+    BuildUrl.absolute [ "error" ] [ BuildUrl.string "msg" msg ]
+
+
+routeToError : Model -> String -> Cmd Msg
+routeToError m msg =
+    Nav.pushUrl m.navKey <| errorUrl msg
+
+
+errorPage : String -> List (Html Msg)
+errorPage msg =
+    [ Html.h2 [] [ Html.text "Error" ]
+    , Html.p [] [ Html.text msg ]
+    ]
+
+
+
+-- View
 
 
 view : Model -> Document Msg
@@ -491,43 +599,14 @@ sideBar model =
         ]
 
 
-hostsLink : Model -> Html Msg
-hostsLink model =
-    Html.a
-        [ Attr.href <| BuildUrl.absolute [ "hosts" ] [] ]
-        [ Html.text "Hosts"
-        ]
-
-
-bookingsUrl : String
-bookingsUrl =
-    BuildUrl.absolute [ "bookings" ] []
-
-
-myAppointmentsLink : Model -> Html Msg
-myAppointmentsLink model =
-    case model.status of
-        SignedIn _ ->
-            Html.a
-                [ Attr.href bookingsUrl ]
-                [ Html.text "Bookings" ]
-
-        _ ->
-            Html.a
-                [ Attr.disabled True
-                , Attr.title "Sign in to access Bookings"
-                ]
-                [ Html.text "Bookings" ]
-
-
 content : Model -> List (Html Msg)
 content model =
     case model.route of
         Hosts ->
-            hostsTable model
+            hostsTable model.hosts
 
-        Appointments hostId ->
-            appointmentsTable hostId
+        Appointments _ appts ->
+            appointmentsTable model appts
 
         MyBookings ->
             [ Html.h2 [] [ Html.text "My bookings" ] ]
@@ -537,23 +616,6 @@ content model =
 
         _ ->
             [ Html.p [] [ Html.text "Not found" ] ]
-
-
-errorUrl : String -> String
-errorUrl msg =
-    BuildUrl.absolute [ "error" ] [ BuildUrl.string "msg" msg ]
-
-
-routeToError : Model -> String -> Cmd Msg
-routeToError m msg =
-    Nav.pushUrl m.navKey <| errorUrl msg
-
-
-errorPage : String -> List (Html Msg)
-errorPage msg =
-    [ Html.h2 [] [ Html.text "Error" ]
-    , Html.p [] [ Html.text msg ]
-    ]
 
 
 appointmentUrl : HostId -> String
@@ -566,35 +628,7 @@ appointmentUrl hostId =
         []
 
 
-appointmentsTable : HostId -> List (Html Msg)
-appointmentsTable hostId =
-    let
-        appts =
-            Dict.get hostId mockAppointments
-                |> Maybe.withDefault []
-    in
-    [ Html.h2 [] [ Html.text "Availiable appointments:" ]
-    , Html.table []
-        [ Html.thead []
-            [ Html.tr []
-                [ Html.th [] [ Html.text "Start" ]
-                , Html.th [] [ Html.text "Duration" ]
-                , Html.th [] [ Html.text "Book" ]
-                ]
-            ]
-        , Html.tbody []
-            (List.map
-                (\x ->
-                    Html.tr []
-                        [ Html.td [] [ Html.text x.start ]
-                        , Html.td [] [ Html.text (String.fromInt x.duration) ]
-                        , Html.td [] [ Html.button [] [ Html.text "Book" ] ]
-                        ]
-                )
-                appts
-            )
-        ]
-    ]
+
 
 
 signInLink : Model -> Html Msg

@@ -5,6 +5,7 @@ import Test exposing (..)
 
 import Host exposing (..)
 import Json.Decode as D
+import Dict
 import Url as Url
 import Url.Parser as Parse exposing (..)
 import Main as Route exposing (Route(..))
@@ -17,27 +18,40 @@ toRoute s =
         _ ->
             NotFound
 
-hostsResponseJson = "[{\"hostId\":\"HostId1\",\"friendlyName\":\"Adam\"},{\"hostId\":\"HostId2\",\"friendlyName\":\"Bertil\"},{\"hostId\":\"HostId3\",\"friendlyName\":\"Calle\"}]"
+hostsResponseJson = "{\"HostId1\":\"Adam\",\"HostId2\":\"Bertil\",\"HostId3\":\"Calle\"}"
 
-mockHosts : List Host
 mockHosts =
-    [ { id = "HostId1"
-      , name = "Adam"
-      }
-    , { id = "HostId2"
-      , name = "Bertil"
-      }
-    , { id = "HostId3"
-      , name = "Calle"
-      }
+    Dict.fromList
+        [ ( "HostId1", "Adam" )
+        , ( "HostId2", "Bertil" )
+        , ( "HostId3", "Calle" )
+        ]
+
+appointmentsResponseJson = 
+  """
+  [{"hostId":"HostId1","start":1540972800,"duration":30},{"hostId":"HostId1","start":1540976400,"duration":30},{"hostId":"HostId1","start":1540980000,"duration":30},{"hostId":"HostId1","start":1540983600,"duration":30},{"hostId":"HostId1","start":1540990800,"duration":30},{"hostId":"HostId1","start":1540994400,"duration":30},{"hostId":"HostId1","start":1540998000,"duration":30}]
+  """
+
+mockAppointments : List Appointment
+mockAppointments =
+    [ Appointment "HostId1" 1540972800 30
+    , Appointment "HostId1" 1540976400 30
+    , Appointment "HostId1" 1540980000 30
+    , Appointment "HostId1" 1540983600 30
+    , Appointment "HostId1" 1540990800 30
+    , Appointment "HostId1" 1540994400 30
+    , Appointment "HostId1" 1540998000 30
     ]
 
 suite : Test
 suite =
     describe "Appointment"
-        [ test "map json to Host" <|
+        [ test "Parses Hosts from json" <|
             \_ ->
                 Expect.equal (D.decodeString readHostResponse hostsResponseJson)  (Ok mockHosts)
+        , test "Parses Appointments from json" <|
+            \_ ->
+                Expect.equal (D.decodeString readApointmentsResponse appointmentsResponseJson)  (Ok mockAppointments)
         , test "Maps /error to NotFound" <|
             \_ ->
                 Expect.equal
@@ -56,7 +70,7 @@ suite =
         , test "Can parse Appointments route" <|
             \_ ->
                 Expect.equal
-                    (Appointments "someHost")
+                    (Appointments "someHost" [])
                     (toRoute "https://local.byappt/hosts/someHost/appointments")
         , test "Can parse Bookings route" <|
             \_ ->

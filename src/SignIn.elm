@@ -1,12 +1,28 @@
-module SignIn exposing (..)
+module SignIn exposing
+    ( Endpoint
+    , Jwks
+    , Jwt
+    , Kid
+    , Nonce
+    , OidcAuthFragment
+    , Session
+    , SigninResponse
+    , VerifyableJwt
+    , assertNonce
+    , getKey
+    , getValue
+    , parseInitialUrl
+    , toAuthUrl
+    , toSignOutUrl
+    )
 
 import Base64 as Base64
-import Json.Decode as Json exposing (Decoder)
+import Http as Http exposing (Error)
+import Json.Decode as Json exposing (Decoder, Value)
 import Url as Url exposing (Url)
 import Url.Builder as ToUrl
 import Url.Parser as Parse exposing (Parser)
-import Http as Http exposing (Error) 
-import Json.Decode exposing (Value)
+
 
 type alias Endpoint =
     { clientId : String
@@ -16,21 +32,26 @@ type alias Endpoint =
     , keys : String
     }
 
+
 type alias OidcAuthFragment =
     { idtoken : Jwt
     , state : State
     }
+
 
 type alias Session =
     { key : State
     , nonce : Nonce
     }
 
+
 type alias State =
     String
 
+
 type alias Nonce =
     String
+
 
 type alias Kid =
     String
@@ -46,10 +67,12 @@ type alias VerifyableJwt =
     , jwk : Maybe Jwk
     }
 
+
 type alias SignOutRequest =
     { redirect : Url
     , token : Jwt
     }
+
 
 type alias Jwks =
     String
@@ -60,10 +83,9 @@ type alias SigninResponse =
     , jwt : Jwt
     }
 
+
 type alias Jwt =
     String
-
-
 
 
 kvp : String -> String -> String
@@ -74,6 +96,7 @@ kvp k v =
 queryString : List String -> String
 queryString =
     String.concat << List.intersperse "&"
+
 
 toAuthUrl : Endpoint -> Session -> String
 toAuthUrl ept s =
@@ -99,6 +122,8 @@ toSignOutUrl token ept =
             ]
     in
     ToUrl.crossOrigin ept.endSession [] query
+
+
 
 -- If the app was requested through a redirect from the
 -- oidc provider there will be a fragment in the url that
@@ -233,4 +258,3 @@ getKey kid keyset =
         |> Result.map (List.filter (matchKid kid))
         |> Result.mapError (always "malformed input")
         |> Result.map List.head
-
