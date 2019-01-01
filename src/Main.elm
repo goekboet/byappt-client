@@ -1,28 +1,29 @@
-port module Main exposing (
-    forgetToken, 
-    forgotToken, 
-    rememberSession, 
-    sessionRemebered, 
-    tokenVerified, 
-    verifyToken,
-    Route(..),
-    toRoute)
+port module Main exposing
+    ( Route(..)
+    , forgetToken
+    , forgotToken
+    , rememberSession
+    , sessionRemebered
+    , toRoute
+    , tokenVerified
+    , verifyToken
+    )
 
 import Browser exposing (..)
 import Browser.Navigation as Nav
 import Dict as Dict
-import Host as Host exposing (mockAppointments, Host, HostId)
+import Host as Host exposing (Host, HostId, mockAppointments)
 import Html as Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
 import Json.Decode exposing (Value, decodeValue, field, string)
-import Url.Parser as FromUrl exposing (Parser, (</>))
-import Url.Parser.Query as Query
 import Set as Set
 import SignIn as S exposing (..)
 import Url as Url exposing (Protocol(..), Url)
 import Url.Builder as BuildUrl
+import Url.Parser as FromUrl exposing ((</>), Parser)
+import Url.Parser.Query as Query
 
 
 type alias Model =
@@ -30,7 +31,6 @@ type alias Model =
     , navKey : Nav.Key
     , status : AuthNStatus
     , route : Route
-    , hosts : List Host
     }
 
 
@@ -111,7 +111,6 @@ init flags url key =
             , navKey = key
             , status = NotSignedIn
             , route = next
-            , hosts = []
             }
     in
     case ( signinFragment, flags.token ) of
@@ -432,7 +431,7 @@ gotHostData m res =
             ( m, routeToError m msg )
 
         Ok hs ->
-            ( { m | hosts = hs }, Cmd.none )
+            ( m, Cmd.none )
 
 
 hostsTable : Model -> List (Html Msg)
@@ -454,7 +453,7 @@ hostsTable m =
                             ]
                         ]
                 )
-                m.hosts
+                []
             )
         ]
     ]
@@ -486,52 +485,18 @@ sideBar : Model -> Html Msg
 sideBar model =
     Html.ul
         []
-        [ Html.li [] (hostsLink model)
+        [ Html.li [] [ hostsLink model ]
         , Html.li [] [ myAppointmentsLink model ]
         , Html.li [] [ signInLink model ]
         ]
 
 
-
--- hostsUrl : String
--- hostsUrl =
---     BuildUrl.absolute [ "hosts" ] []
-
-
-getHostFrom : Model -> Maybe Host
-getHostFrom model =
-    let
-        hostId =
-            hostFromRoute model.route
-
-        findHost id =
-            List.filter (\h -> h.id == id) model.hosts
-
-        host =
-            Maybe.map findHost hostId
-    in
-    case host of
-        Just [ h ] ->
-            Just h
-
-        _ ->
-            Nothing
-
-
-hostsLink : Model -> List (Html Msg)
+hostsLink : Model -> Html Msg
 hostsLink model =
-    let
-        hostName =
-            Maybe.map .name (getHostFrom model)
-                |> Maybe.map (\h -> Html.i [] [ Html.text h ])
-                |> Maybe.withDefault (Html.text "")
-    in
-    [ Html.a
+    Html.a
         [ Attr.href <| BuildUrl.absolute [ "hosts" ] [] ]
         [ Html.text "Hosts"
         ]
-    , hostName
-    ]
 
 
 bookingsUrl : String
