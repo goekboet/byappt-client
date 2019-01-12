@@ -1,5 +1,6 @@
 module Host exposing
     ( Appointment
+    , apptToJson
     , HostId
     , Hosts
     , readApointmentsResponse
@@ -8,6 +9,7 @@ module Host exposing
 
 import Dict exposing (..)
 import Json.Decode as D
+import Json.Encode as E
 import Time exposing (..)
 
 
@@ -36,6 +38,13 @@ readAppointment =
         (D.field "hostId" D.string)
         (D.field "start" D.int)
         (D.field "duration" D.int)
+
+apptToJson : Appointment -> D.Value
+apptToJson appt = E.object
+    [ ("hostId", E.string appt.hostId)
+    , ("start", E.int appt.start)
+    , ("duration", E.int appt.duration)
+    ]
 
 
 readApointmentsResponse : D.Decoder (List Appointment)

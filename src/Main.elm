@@ -152,7 +152,8 @@ type Msg
     | ClickedLink Browser.UrlRequest
     | GotHosts (Result String Hosts)
     | GotAppointments HostId (Result String (List Appointment))
-    | Book HostId String
+    | Book Appointment
+    | BookingConfirm Bool
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -174,7 +175,7 @@ update msg model =
         SessionRecalled n ->
             case ( n, model.status ) of
                 ( Just nonce, Verifying f ) ->
-                    case S.assertNonce nonce f.idtoken of
+                    case S.toSigninResponse f.idtoken of
                         Ok r ->
                             ( model, fetchKey model.endpoint False r )
 
@@ -240,7 +241,11 @@ update msg model =
         GotAppointments hostId r ->
             gotAppointmentsData model hostId r
 
-        Book hostId apptId -> (model, Cmd.none)
+        Book appt ->
+            ( model, Cmd.none )
+
+        BookingConfirm c ->
+            ( model, Cmd.none )
 
 
 
@@ -406,6 +411,17 @@ hostsReq =
         }
 
 
+apptsUrl : HostId -> String
+apptsUrl hostId =
+    BuildUrl.absolute
+        [ "api"
+        , "hosts"
+        , hostId
+        , "appointments"
+        ]
+        []
+
+
 apptsReq : HostId -> Cmd Msg
 apptsReq hostId =
     let
@@ -414,22 +430,28 @@ apptsReq hostId =
 
         r fromApi =
             withHostId hostId <| Result.mapError (always "httperror") fromApi
-
-        apptsUrl =
-            BuildUrl.absolute
-                [ "api"
-                , "hosts"
-                , hostId
-                , "appointments"
-                ]
-                []
     in
     Http.get
-        { url = apptsUrl
+        { url = apptsUrl hostId
         , expect = Http.expectJson r Host.readApointmentsResponse
         }
 
--- bookReq : HostId -> String -> Cmd Msg
+
+bookReq : Jwt -> Appointment -> Cmd Msg
+bookReq token appt =
+    let
+        auth = String.join " " [ "Bearer", token]  
+    in
+    Http.request
+        { method = "POST"
+        , headers = [Http.header "Authorization" auth]
+        , url = apptsUrl appt.hostId
+        , body = Http.jsonBody (Host.apptToJson appt)
+        , expect = Http.expectWhatever (always <| BookingConfirm False)
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
 
 gotHostData : Model -> Result String Hosts -> ( Model, Cmd Msg )
 gotHostData m res =
@@ -477,12 +499,17 @@ hostsTable hs =
         ]
     ]
 
+
 appointmentsTable : Model -> List Appointment -> List (Html Msg)
 appointmentsTable model appts =
     let
-        book hostId apptId = case model.status of
-            SignedIn _ -> Html.button [ onClick (Book hostId apptId)] [ Html.text "Book" ]
-            _ -> Html.button [ Attr.disabled True ] [ Html.text "Book " ]
+        book appt =
+            case model.status of
+                SignedIn _ ->
+                    Html.button [ onClick (Book appt) ] [ Html.text "Book" ]
+
+                _ ->
+                    Html.button [ Attr.disabled True ] [ Html.text "Book " ]
     in
     [ Html.h2 [] [ Html.text "Availiable appointments:" ]
     , Html.table []
@@ -499,13 +526,14 @@ appointmentsTable model appts =
                     Html.tr []
                         [ Html.td [] [ Html.text (String.fromInt x.start) ]
                         , Html.td [] [ Html.text (String.fromInt x.duration) ]
-                        , Html.td [] [ Html.button [] [ Html.text "Book" ] ]
+                        , Html.td [] [ book x ]
                         ]
                 )
                 appts
             )
         ]
     ]
+
 
 hostsLink : Model -> Html Msg
 hostsLink model =
@@ -538,8 +566,6 @@ myAppointmentsLink model =
                 , Attr.title "Sign in to access Bookings"
                 ]
                 [ Html.text "Bookings" ]
-
-
 
 
 
@@ -626,9 +652,6 @@ appointmentUrl hostId =
         , "appointments"
         ]
         []
-
-
-
 
 
 signInLink : Model -> Html Msg

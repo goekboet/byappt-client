@@ -8,7 +8,7 @@ module SignIn exposing
     , Session
     , SigninResponse
     , VerifyableJwt
-    , assertNonce
+    , toSigninResponse
     , getKey
     , getValue
     , parseInitialUrl
@@ -104,7 +104,7 @@ toAuthUrl ept s =
         query =
             [ ToUrl.string "client_id" ept.clientId
             , ToUrl.string "redirect_uri" ept.authRedirect
-            , ToUrl.string "response_type" "id_token"
+            , ToUrl.string "response_type" "token"
             , ToUrl.string "scope" "openid"
             , ToUrl.string "state" s.key
             , ToUrl.string "nonce" s.nonce
@@ -149,7 +149,7 @@ parseQueryString =
 parseSigninFragment : String -> Maybe (Result String OidcAuthFragment)
 parseSigninFragment f =
     case parseQueryString f of
-        [ [ "id_token", a ], [ "state", b ] ] ->
+        [ [ "access_token", a ], [ "token_type", "Bearer" ], [ "expires_in", _ ], [ "scope", "openid" ], [ "state", b ] ] ->
             Just (Ok <| OidcAuthFragment a b)
 
         [ [ "state", _ ], [ "error", e ], [ "error_description", desc ] ] ->
@@ -177,6 +177,19 @@ getToken s f =
     else
         Err "Mismatching state"
 
+toSigninResponse : Jwt -> Result String SigninResponse
+toSigninResponse token = 
+    case String.split "." token of
+        [ h, p, s ] ->
+            let
+                getKeyId =
+                    Base64.decode h
+                        |> Result.andThen readKid
+            in
+            Result.map2 SigninResponse getKeyId (Ok token)
+
+        _ ->
+            Err (String.join " " [ "malformed jwt-token:", token ])
 
 assertNonce : Nonce -> Jwt -> Result String SigninResponse
 assertNonce nonce token =
