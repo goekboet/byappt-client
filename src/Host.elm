@@ -1,3 +1,4 @@
+
 module Host exposing
     ( Appointment
     , apptToJson

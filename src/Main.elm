@@ -1,12 +1,11 @@
 port module Main exposing
     ( Route(..)
-    , forgetToken
-    , forgotToken
-    , rememberSession
-    , sessionRemebered
+    , cacheAuthFgmt
+    , getState
+    , gotState
+    , setState
+    , stateSet
     , toRoute
-    , tokenVerified
-    , verifyToken
     )
 
 import Browser exposing (..)
@@ -17,8 +16,9 @@ import Html as Html exposing (Html)
 import Html.Attributes as Attr
 import Html.Events as Event exposing (onClick)
 import Http as Http
-import Json.Decode exposing (Value, decodeValue, field, string)
-import SignIn as S exposing (Endpoint, Jwks, Jwt, Nonce, OidcAuthFragment, Session, SigninResponse, VerifyableJwt)
+import Json.Decode as D exposing (Value, decodeValue, field, string)
+import Json.Encode as E
+import SignIn as S exposing (BookingsAuth, Endpoint)
 import Url as Url exposing (Protocol(..), Url)
 import Url.Builder as BuildUrl
 import Url.Parser as FromUrl exposing ((</>), Parser)
@@ -28,48 +28,38 @@ import Url.Parser.Query as Query
 type alias Model =
     { endpoint : Endpoint
     , navKey : Nav.Key
-    , status : AuthNStatus
+    , error : List Error
+    , bookingsAuth : Maybe BookingsAuth
     , route : Route
     , hosts : Maybe Hosts
     }
 
 
+type Error
+    = Message String
+    | DecodeError D.Error
+    | HttpError Http.Error
+
+
 type alias Flags =
     { oidcEndpoint : Endpoint
-    , token : Maybe Jwt
+    , bookingsAuth : Maybe String
     }
 
 
-type AuthNStatus
-    = NotSignedIn
-    | Redirecting -- got nonce and state
-    | Verifying OidcAuthFragment
-    | SignedIn Jwt -- got verified token from js
-    | SigningOut -- cleared token from js
+port setState : Value -> Cmd msg
 
 
-port rememberSession : () -> Cmd msg
+port stateSet : (String -> msg) -> Sub msg
 
 
-port sessionRemebered : (Session -> msg) -> Sub msg
+port getState : String -> Cmd msg
 
 
-port recallSession : String -> Cmd msg
+port gotState : (Maybe String -> msg) -> Sub msg
 
 
-port sessionRecalled : (Maybe Nonce -> msg) -> Sub msg
-
-
-port verifyToken : VerifyableJwt -> Cmd msg
-
-
-port tokenVerified : (Value -> msg) -> Sub msg
-
-
-port forgetToken : () -> Cmd msg
-
-
-port forgotToken : (String -> msg) -> Sub msg
+port cacheAuthFgmt : Value -> Cmd msg
 
 
 main =
@@ -86,143 +76,126 @@ main =
 init : Flags -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
     let
-        signinFragment =
-            S.parseInitialUrl url
+        initialAuth =
+            flags.bookingsAuth
+                |> Maybe.map (D.decodeString S.bookingsAuthFromJson)
+
+        bookingsAuth =
+            url.fragment
+                |> Maybe.andThen S.parseBookingsAuth
+
+        url_ =
+            if url.path == "/" then
+                { url | path = "/hosts" }
+
+            else
+                url
 
         next =
-            toRoute url
+            toRoute url_
 
         model =
             { endpoint = flags.oidcEndpoint
             , navKey = key
-            , status = NotSignedIn
+            , error = []
+            , bookingsAuth = Nothing
             , route = next
             , hosts = Nothing
             }
     in
-    case ( signinFragment, flags.token ) of
+    case ( bookingsAuth, initialAuth ) of
         ( Just (Ok fgmt), _ ) ->
             ( { model
-                | status = Verifying fgmt
-                , route = Hosts
+                | bookingsAuth = Just fgmt
               }
-            , recallSession fgmt.state
+            , getState fgmt.state
             )
 
         ( Just (Err msg), _ ) ->
-            ( model
-            , routeToError model msg
+            ( { model | error = Message msg :: model.error }
+            , Cmd.none
             )
 
-        ( Nothing, Just jwt ) ->
+        ( Nothing, Just (Ok auth) ) ->
             ( { model
-                | status = SignedIn jwt
+                | bookingsAuth = Just auth
               }
             , route key url
+            )
+
+        ( _, Just (Err e) ) ->
+            ( { model
+                | error = DecodeError e :: model.error
+              }
+            , Cmd.none
             )
 
         _ ->
-            ( { model
-                | route = toRoute url
-              }
-            , route key url
-            )
+            switchToRoute model url_
 
 
 subscriptions : Model -> Sub Msg
-subscriptions _ =
+subscriptions m =
     Sub.batch
-        [ sessionRemebered SessionRemebered
-        , tokenVerified TokenVerified
-        , forgotToken SignedOut
-        , sessionRecalled SessionRecalled
+        [ stateSet StateSet
+        , gotState (fromPortBookingState m)
         ]
 
 
 type Msg
     = NoOp
-    | RememberSession
-    | SessionRemebered Session
-    | SessionRecalled (Maybe Nonce)
-    | GotKey (Result String VerifyableJwt)
-    | TokenVerified Value
-    | SignOut
-    | SignedOut String
+    | Fail Error
+    | StateSet String
+    | GotState (Result Error BookingState)
     | ChangedUrl Url
     | ClickedLink Browser.UrlRequest
     | GotHosts (Result String Hosts)
-    | GotAppointments HostId (Result String (List Appointment))
+    | GotAppointments HostId (Result Error (List Appointment))
+    | GotBookings (Result Error (List Appointment))
     | Book Appointment
-    | BookingConfirm Bool
+    | BookingConfirm (Result Error Appointment)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         NoOp ->
-            ( model, Cmd.none )
+            ( model
+            , Cmd.none
+            )
 
-        RememberSession ->
-            ( model, rememberSession () )
-
-        SessionRemebered s ->
+        Fail e ->
             ( { model
-                | status = Redirecting
+                | error = e :: model.error
+                , bookingsAuth = Nothing
               }
+            , Cmd.none
+            )
+
+        StateSet s ->
+            ( model
             , redirectToAuthEndpoint model s
             )
 
-        SessionRecalled n ->
-            case ( n, model.status ) of
-                ( Just nonce, Verifying f ) ->
-                    case S.toSigninResponse f.idtoken of
-                        Ok r ->
-                            ( model, fetchKey model.endpoint False r )
-
-                        Err m ->
-                            ( { model | status = NotSignedIn }, routeToError model m )
-
-                _ ->
-                    ( { model | status = NotSignedIn }, routeToError model "No nonce in localstorage." )
-
-        GotKey response ->
-            case response of
-                Ok v ->
-                    case v.jwk of
-                        Just k ->
-                            ( model, verifyToken v )
-
-                        Nothing ->
-                            ( model, fetchKey model.endpoint True (S.SigninResponse v.kid v.jwt) )
+        GotState s ->
+            case s of
+                Ok state ->
+                    routeFromBookingState model state
 
                 Err m ->
-                    ( { model | status = NotSignedIn }, routeToError model m )
-
-        TokenVerified s ->
-            case decodeValue string s of
-                Ok t ->
-                    ( { model | status = SignedIn t }, Nav.replaceUrl model.navKey (BuildUrl.absolute [ "hosts" ] []) )
-
-                _ ->
-                    ( { model | status = NotSignedIn }, routeToError model "Bad jwt" )
-
-        SignOut ->
-            ( { model
-                | status = SigningOut
-              }
-            , forgetToken ()
-            )
-
-        SignedOut t ->
-            ( model
-            , redirectToSignoutEndpoint model t
-            )
+                    ( { model | error = m :: model.error }
+                    , Cmd.none
+                    )
 
         ChangedUrl url ->
-            ( { model
-                | route = toRoute url
-              }
-            , fetchData (toRoute url)
+            let
+                model_ =
+                    { model
+                        | route = toRoute url
+                    }
+            in
+            ( model_
+            , fetchData model_
             )
 
         ClickedLink req ->
@@ -241,70 +214,34 @@ update msg model =
         GotAppointments hostId r ->
             gotAppointmentsData model hostId r
 
+        GotBookings bs ->
+            gotBookingsData model bs
+
         Book appt ->
-            ( model, Cmd.none )
+            case model.bookingsAuth of
+                Just auth ->
+                    ( model
+                    , bookingsPost auth.accesstoken appt
+                    )
+
+                _ ->
+                    ( model
+                    , setState
+                        (toJsonBookingState
+                            { appt = Just appt
+                            , url =
+                                BuildUrl.absolute
+                                    [ "hosts"
+                                    , appt.hostId
+                                    , "appointments"
+                                    ]
+                                    []
+                            }
+                        )
+                    )
 
         BookingConfirm c ->
             ( model, Cmd.none )
-
-
-
--- Oidc Sign-in
-
-
-makeKeyResponse : SigninResponse -> Bool -> Result Http.Error Jwks -> Msg
-makeKeyResponse signin isRetry response =
-    let
-        notFound k =
-            case k of
-                Just x ->
-                    Ok (Just x)
-
-                Nothing ->
-                    if isRetry then
-                        Err "Key not found"
-
-                    else
-                        Ok Nothing
-
-        key =
-            response
-                |> Result.mapError (always "Request errored.")
-                |> Result.andThen (S.getKey signin.kid)
-                |> Result.andThen notFound
-                |> Result.map (VerifyableJwt signin.kid signin.jwt)
-    in
-    GotKey key
-
-
-fetchKey : Endpoint -> Bool -> SigninResponse -> Cmd Msg
-fetchKey ept isRetry signin =
-    let
-        cacheControl =
-            if isRetry then
-                [ Http.header "Cache-Control" "no-cache" ]
-
-            else
-                []
-
-        handleResponse =
-            makeKeyResponse signin isRetry
-    in
-    Http.request
-        { method = "GET"
-        , headers = cacheControl
-        , url = ept.keys
-        , body = Http.emptyBody
-        , expect = Http.expectString handleResponse
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-redirectToSignoutEndpoint : Model -> Jwt -> Cmd msg
-redirectToSignoutEndpoint m t =
-    S.toSignOutUrl t m.endpoint
-        |> Nav.load
 
 
 
@@ -314,9 +251,14 @@ redirectToSignoutEndpoint m t =
 type Route
     = Hosts
     | Appointments HostId (List Appointment)
-    | MyBookings
+    | MyBookings (List Appointment)
     | NotFound
     | Error String
+
+
+toRoute : Url -> Route
+toRoute url =
+    Maybe.withDefault NotFound (FromUrl.parse parser url)
 
 
 parser : Parser (Route -> a) a
@@ -333,19 +275,106 @@ parser =
     FromUrl.oneOf
         [ FromUrl.map Hosts (FromUrl.s "hosts")
         , FromUrl.map (\x -> Appointments x []) (FromUrl.s "hosts" </> FromUrl.string </> FromUrl.s "appointments")
-        , FromUrl.map MyBookings (FromUrl.s "bookings")
+        , FromUrl.map (MyBookings []) (FromUrl.s "bookings")
         , FromUrl.map toError (FromUrl.s "error" </> msg)
         ]
 
 
-toRoute : Url -> Route
-toRoute url =
-    Maybe.withDefault NotFound (FromUrl.parse parser url)
+type alias BookingState =
+    { url : String
+    , appt : Maybe Appointment
+    }
 
 
-redirectToAuthEndpoint : Model -> Session -> Cmd msg
+toJsonBookingState : BookingState -> Value
+toJsonBookingState s =
+    let
+        appt =
+            case s.appt of
+                Just a ->
+                    E.object
+                        [ ( "hostId", E.string a.hostId )
+                        , ( "start", E.int a.start )
+                        , ( "duration", E.int a.duration )
+                        ]
+
+                _ ->
+                    E.null
+    in
+    E.object
+        [ ( "url", E.string s.url )
+        , ( "appt", appt )
+        ]
+
+
+fromJsonBookingState : D.Decoder BookingState
+fromJsonBookingState =
+    let
+        appt =
+            D.map3 Appointment
+                (D.field "hostId" D.string)
+                (D.field "start" D.int)
+                (D.field "duration" D.int)
+    in
+    D.map2 BookingState
+        (D.field "url" D.string)
+        (D.field "appt" (D.nullable appt))
+
+
+fromPortBookingState : Model -> Maybe String -> Msg
+fromPortBookingState m s =
+    case s of
+        Just json ->
+            D.decodeString fromJsonBookingState json
+                |> Result.mapError DecodeError
+                |> GotState
+
+        Nothing ->
+            Fail (Message "No matching state")
+
+
+redirectToAuthEndpoint : Model -> String -> Cmd msg
 redirectToAuthEndpoint m s =
     Nav.load (S.toAuthUrl m.endpoint s)
+
+
+routeFromBookingState : Model -> BookingState -> ( Model, Cmd Msg )
+routeFromBookingState m s =
+    let
+        next =
+            Url.fromString s.url
+                |> Maybe.map toRoute
+                |> Maybe.withDefault NotFound
+    in
+    case ( s.appt, m.bookingsAuth ) of
+        ( Just a, Just fgmt ) ->
+            ( { m
+                | route = next
+              }
+            , Cmd.batch
+                [ Nav.pushUrl m.navKey s.url
+                , bookingsPost fgmt.accesstoken a
+                , cacheAuthFgmt (S.bookingsAuthToJson fgmt)
+                ]
+            )
+
+        ( Nothing, Just fgmt ) ->
+            ( { m
+                | route = next
+              }
+            , Cmd.batch
+                [ Nav.pushUrl m.navKey s.url
+                , cacheAuthFgmt (S.bookingsAuthToJson fgmt)
+                ]
+            )
+
+        _ ->
+            ( { m
+                | error = Message "Cannot route from state without token and url" :: m.error
+                , bookingsAuth = Nothing
+              }
+            , Cmd.none
+            )
 
 
 switchToRoute : Model -> Url -> ( Model, Cmd Msg )
@@ -357,8 +386,7 @@ switchToRoute model url =
     ( { model
         | route = next
       }
-    , Cmd.batch
-        [ Nav.pushUrl model.navKey <| Url.toString url ]
+    , Nav.pushUrl model.navKey <| Url.toString url
     )
 
 
@@ -386,14 +414,20 @@ route key url =
 -- Hosts --
 
 
-fetchData : Route -> Cmd Msg
-fetchData r =
-    case r of
-        Hosts ->
+fetchData : Model -> Cmd Msg
+fetchData m =
+    case ( m.route, m.bookingsAuth ) of
+        ( Hosts, _ ) ->
             hostsReq
 
-        Appointments hostId _ ->
+        ( Appointments hostId _, _ ) ->
             apptsReq hostId
+
+        ( MyBookings _, Nothing ) ->
+            setState (toJsonBookingState { appt = Nothing, url = "/bookings" })
+
+        ( MyBookings _, Just fgmt ) ->
+            bookingsGet fgmt.accesstoken
 
         _ ->
             Cmd.none
@@ -424,33 +458,56 @@ apptsUrl hostId =
 
 apptsReq : HostId -> Cmd Msg
 apptsReq hostId =
-    let
-        withHostId hId appts =
-            GotAppointments hId appts
-
-        r fromApi =
-            withHostId hostId <| Result.mapError (always "httperror") fromApi
-    in
     Http.get
         { url = apptsUrl hostId
-        , expect = Http.expectJson r Host.readApointmentsResponse
+        , expect =
+            Http.expectJson
+                (GotAppointments hostId << Result.mapError HttpError)
+                Host.readApointmentsResponse
         }
 
 
-bookReq : Jwt -> Appointment -> Cmd Msg
-bookReq token appt =
+bookingsPost : String -> Appointment -> Cmd Msg
+bookingsPost token appt =
     let
-        auth = String.join " " [ "Bearer", token]  
+        auth =
+            String.join " " [ "Bearer", token ]
+
+        resp =
+            BookingConfirm
+                << Result.map (always appt)
+                << Result.mapError HttpError
     in
     Http.request
         { method = "POST"
-        , headers = [Http.header "Authorization" auth]
+        , headers = [ Http.header "Authorization" auth ]
         , url = apptsUrl appt.hostId
         , body = Http.jsonBody (Host.apptToJson appt)
-        , expect = Http.expectWhatever (always <| BookingConfirm False)
+        , expect = Http.expectWhatever resp
         , timeout = Nothing
         , tracker = Nothing
         }
+
+
+bookingsGet : String -> Cmd Msg
+bookingsGet token =
+    let
+        auth =
+            String.join " " [ "Bearer", token ]
+    in
+    Http.request
+        { method = "GET"
+        , headers = [ Http.header "Authorization" auth ]
+        , url = "https://local.byappt/api/bookings"
+        , body = Http.emptyBody
+        , expect = Http.expectJson (GotBookings << Result.mapError HttpError) Host.readApointmentsResponse
+        , timeout = Nothing
+        , tracker = Nothing
+        }
+
+
+
+-- decodeBookingsGet :
 
 
 gotHostData : Model -> Result String Hosts -> ( Model, Cmd Msg )
@@ -463,14 +520,24 @@ gotHostData m res =
             ( { m | hosts = Just hs }, Cmd.none )
 
 
-gotAppointmentsData : Model -> HostId -> Result String (List Appointment) -> ( Model, Cmd Msg )
+gotAppointmentsData : Model -> HostId -> Result Error (List Appointment) -> ( Model, Cmd Msg )
 gotAppointmentsData m hostId res =
     case res of
-        Err msg ->
-            ( m, routeToError m msg )
+        Err e ->
+            ( { m | error = e :: m.error }, Cmd.none )
 
         Ok appts ->
             ( { m | route = Appointments hostId appts }, Cmd.none )
+
+
+gotBookingsData : Model -> Result Error (List Appointment) -> ( Model, Cmd Msg )
+gotBookingsData m res =
+    case res of
+        Err e ->
+            ( { m | error = e :: m.error }, Cmd.none )
+
+        Ok appts ->
+            ( { m | route = MyBookings appts }, Cmd.none )
 
 
 hostsTable : Maybe Hosts -> List (Html Msg)
@@ -504,8 +571,8 @@ appointmentsTable : Model -> List Appointment -> List (Html Msg)
 appointmentsTable model appts =
     let
         book appt =
-            case model.status of
-                SignedIn _ ->
+            case model.bookingsAuth of
+                Just _ ->
                     Html.button [ onClick (Book appt) ] [ Html.text "Book" ]
 
                 _ ->
@@ -541,31 +608,6 @@ hostsLink model =
         [ Attr.href <| BuildUrl.absolute [ "hosts" ] [] ]
         [ Html.text "Hosts"
         ]
-
-
-
--- Bookings, or made appointments
-
-
-bookingsUrl : String
-bookingsUrl =
-    BuildUrl.absolute [ "bookings" ] []
-
-
-myAppointmentsLink : Model -> Html Msg
-myAppointmentsLink model =
-    case model.status of
-        SignedIn _ ->
-            Html.a
-                [ Attr.href bookingsUrl ]
-                [ Html.text "Bookings" ]
-
-        _ ->
-            Html.a
-                [ Attr.disabled True
-                , Attr.title "Sign in to access Bookings"
-                ]
-                [ Html.text "Bookings" ]
 
 
 
@@ -620,9 +662,20 @@ sideBar model =
     Html.ul
         []
         [ Html.li [] [ hostsLink model ]
-        , Html.li [] [ myAppointmentsLink model ]
-        , Html.li [] [ signInLink model ]
+        , Html.li [] [ bookingsLink model ]
         ]
+
+
+bookingsUrl : String
+bookingsUrl =
+    BuildUrl.absolute [ "bookings" ] []
+
+
+bookingsLink : Model -> Html Msg
+bookingsLink model =
+    Html.a
+        [ Attr.href bookingsUrl ]
+        [ Html.text "Bookings" ]
 
 
 content : Model -> List (Html Msg)
@@ -634,7 +687,7 @@ content model =
         Appointments _ appts ->
             appointmentsTable model appts
 
-        MyBookings ->
+        MyBookings bs ->
             [ Html.h2 [] [ Html.text "My bookings" ] ]
 
         Error msg ->
@@ -652,27 +705,3 @@ appointmentUrl hostId =
         , "appointments"
         ]
         []
-
-
-signInLink : Model -> Html Msg
-signInLink model =
-    case model.status of
-        NotSignedIn ->
-            Html.a
-                [ Event.onClick RememberSession ]
-                [ Html.text "Sign in" ]
-
-        SignedIn _ ->
-            Html.a
-                [ Event.onClick SignOut ]
-                [ Html.text "Sign out" ]
-
-        SigningOut ->
-            Html.a
-                []
-                [ Html.text "Signing out" ]
-
-        _ ->
-            Html.a
-                []
-                [ Html.text "Signing in" ]

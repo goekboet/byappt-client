@@ -75,6 +75,6 @@ suite =
         , test "Can parse Bookings route" <|
             \_ ->
                 Expect.equal
-                    MyBookings
+                    (MyBookings [])
                     (toRoute "https://local.byappt/bookings")
         ]
